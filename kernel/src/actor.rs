@@ -5,7 +5,9 @@ use core::future::Future;
 use core::pin::Pin;
 
 pub trait Actor {
-    type Message;
+    type Message<'a>: Sized
+    where
+        Self: 'a;
     type OnStartFuture<'a>: Future<Output = ()>
     where
         Self: 'a;
@@ -14,7 +16,10 @@ pub trait Actor {
         Self: 'a;
 
     fn on_start(self: Pin<&'_ mut Self>) -> Self::OnStartFuture<'_>;
-    fn on_message(self: Pin<&'_ mut Self>, message: Self::Message) -> Self::OnMessageFuture<'_>;
+    fn on_message<'m>(
+        self: Pin<&'m mut Self>,
+        message: &'m Self::Message<'m>,
+    ) -> Self::OnMessageFuture<'m>;
 }
 
 pub struct Address<'a, A: Actor> {
@@ -28,7 +33,7 @@ impl<'a, A: Actor> Address<'a, A> {
 }
 
 impl<'a, A: Actor> Address<'a, A> {
-    pub async fn send(&self, message: A::Message) {
+    pub async fn send<'m>(&self, message: &'m A::Message<'m>) {
         self.state.send(message).await
     }
 }
@@ -43,7 +48,7 @@ impl<'a, A: Actor> Clone for Address<'a, A> {
 
 pub struct ActorState<'a, A: Actor> {
     pub actor: UnsafeCell<A>,
-    pub channel: Channel<'a, ActorMessage<A>, consts::U4>,
+    pub channel: Channel<'a, ActorMessage<'a, A>, consts::U4>,
     signals: UnsafeCell<[SignalSlot; 4]>,
 }
 
@@ -69,8 +74,12 @@ impl<'a, A: Actor> ActorState<'a, A> {
         panic!("not enough signals!");
     }
 
-    async fn send(&'a self, message: A::Message) {
+    async fn send<'m>(&'a self, message: &'m A::Message<'m>)
+    where
+        A: 'm + 'a,
+    {
         let signal = self.acquire_signal();
+        let message = unsafe { core::mem::transmute::<_, &'a A::Message<'a>>(message) };
         let message = ActorMessage::new(message, signal);
         self.channel.send(message).await;
         SignalFuture::new(signal).await
@@ -86,21 +95,18 @@ impl<'a, A: Actor> ActorState<'a, A> {
     }
 }
 
-pub struct ActorMessage<A: Actor> {
-    message: Option<A::Message>,
+pub struct ActorMessage<'m, A: Actor + 'm> {
+    message: *const A::Message<'m>,
     signal: *const SignalSlot,
 }
 
-impl<A: Actor> ActorMessage<A> {
-    fn new(message: A::Message, signal: *const SignalSlot) -> Self {
-        Self {
-            message: Some(message),
-            signal,
-        }
+impl<'m, A: Actor> ActorMessage<'m, A> {
+    fn new(message: *const A::Message<'m>, signal: *const SignalSlot) -> Self {
+        Self { message, signal }
     }
 
-    pub fn take_message(&mut self) -> A::Message {
-        self.message.take().unwrap()
+    pub fn message(&mut self) -> &A::Message<'m> {
+        unsafe { &*self.message }
     }
 
     pub fn done(&mut self) {
@@ -108,7 +114,7 @@ impl<A: Actor> ActorMessage<A> {
     }
 }
 
-impl<A: Actor> Drop for ActorMessage<A> {
+impl<'m, A: Actor> Drop for ActorMessage<'m, A> {
     fn drop(&mut self) {
         self.done();
     }
