@@ -1,8 +1,10 @@
-use crate::channel::{consts, Channel};
+use crate::channel::{consts, Channel, ChannelSend};
 use crate::signal::{SignalFuture, SignalSlot};
 use core::cell::UnsafeCell;
 use core::future::Future;
 use core::pin::Pin;
+use core::task::{Context, Poll};
+use embassy::util::DropBomb;
 
 pub trait Actor {
     type Message<'a>: Sized
@@ -33,8 +35,8 @@ impl<'a, A: Actor> Address<'a, A> {
 }
 
 impl<'a, A: Actor> Address<'a, A> {
-    pub async fn send<'m>(&self, message: &'m A::Message<'m>) {
-        self.state.send(message).await
+    pub fn send<'m>(&self, message: &'m A::Message<'m>) -> SendFuture<'a, 'm, A> {
+        self.state.send(message)
     }
 }
 
@@ -74,15 +76,19 @@ impl<'a, A: Actor> ActorState<'a, A> {
         panic!("not enough signals!");
     }
 
-    async fn send<'m>(&'a self, message: &'m A::Message<'m>)
+    /// Send a message to this actor. The returned future _must_ be awaited before dropped. If it is not
+    /// awaited, it will panic.
+    fn send<'m>(&'a self, message: &'m A::Message<'m>) -> SendFuture<'a, 'm, A>
+    // impl Future<Output = ()> + 'a
     where
         A: 'm + 'a,
     {
         let signal = self.acquire_signal();
         let message = unsafe { core::mem::transmute::<_, &'a A::Message<'a>>(message) };
         let message = ActorMessage::new(message, signal);
-        self.channel.send(message).await;
-        SignalFuture::new(signal).await
+        let chan = self.channel.send(message);
+        let sig = SignalFuture::new(signal);
+        SendFuture::new(chan, sig)
     }
 
     pub fn mount(&'a self) -> Address<'a, A> {
@@ -92,6 +98,65 @@ impl<'a, A: Actor> ActorState<'a, A> {
 
     pub fn address(&'a self) -> Address<'a, A> {
         Address::new(self)
+    }
+}
+
+enum SendState {
+    WaitChannel,
+    WaitSignal,
+    Done,
+}
+
+pub struct SendFuture<'a, 'm, A: Actor + 'a> {
+    channel: ChannelSend<'a, ActorMessage<'a, A>, consts::U4>,
+    signal: SignalFuture<'a, 'm>,
+    state: SendState,
+    bomb: Option<DropBomb>,
+}
+
+impl<'a, 'm, A: Actor> SendFuture<'a, 'm, A> {
+    pub fn new(
+        channel: ChannelSend<'a, ActorMessage<'a, A>, consts::U4>,
+        signal: SignalFuture<'a, 'm>,
+    ) -> Self {
+        Self {
+            channel,
+            signal,
+            state: SendState::WaitChannel,
+            bomb: Some(DropBomb::new()),
+        }
+    }
+}
+
+impl<'a, 'm, A: Actor> Future for SendFuture<'a, 'm, A> {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        loop {
+            let result = match self.state {
+                SendState::WaitChannel => {
+                    let result = Pin::new(&mut self.channel).poll(cx);
+                    if result.is_ready() {
+                        self.state = SendState::WaitSignal;
+                    }
+                    result
+                }
+                SendState::WaitSignal => {
+                    let result = Pin::new(&mut self.signal).poll(cx);
+                    if result.is_ready() {
+                        self.state = SendState::Done;
+                    }
+                    result
+                }
+                SendState::Done => {
+                    self.bomb.take().unwrap().defuse();
+                    return Poll::Ready(());
+                }
+            };
+            if result.is_pending() {
+                return result;
+            }
+        }
     }
 }
 
