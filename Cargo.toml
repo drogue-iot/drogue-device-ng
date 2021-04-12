@@ -2,8 +2,6 @@
 members = [
     "kernel",
     "macros",
-    "examples/std/hello",
-    "examples/nrf52/microbit-hello",
 ]
 
 [patch.crates-io]

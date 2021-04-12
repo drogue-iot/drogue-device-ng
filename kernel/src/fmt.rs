@@ -9,7 +9,6 @@ pub use fmt::*;
 
 #[cfg(feature = "defmt")]
 mod fmt {
-    #![macro_use]
     pub use defmt::{
         assert, assert_eq, assert_ne, debug, debug_assert, debug_assert_eq, debug_assert_ne, error,
         info, panic, todo, trace, unreachable, unwrap, warn,
@@ -18,7 +17,6 @@ mod fmt {
 
 #[cfg(feature = "log")]
 mod fmt {
-    #![macro_use]
     pub use core::{
         assert, assert_eq, assert_ne, debug_assert, debug_assert_eq, debug_assert_ne, panic, todo,
         unreachable,
