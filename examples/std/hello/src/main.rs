@@ -8,7 +8,7 @@
 
 use core::future::Future;
 use core::pin::Pin;
-use drogue_device_platform_std::{self as drogue, *};
+use drogue_device_kernel::{self as drogue, *};
 
 pub struct MyActor {
     name: &'static str,

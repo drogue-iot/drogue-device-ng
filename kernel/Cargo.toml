@@ -7,7 +7,8 @@ edition = "2018"
 name = "drogue-device-kernel"
 version = "0.1.0"
 
-[lib]
+[dependencies.drogue-device-macros]
+path = "../macros"
 
 [dependencies.embassy]
 version = "0.1.0"

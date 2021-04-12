@@ -2,12 +2,9 @@
 members = [
     "kernel",
     "macros",
-    "platform/std",
-    "platform/nrf",
     "examples/std/hello",
     "examples/nrf52/microbit-hello",
 ]
 
 [patch.crates-io]
 cortex-m = {git = "https://github.com/rust-embedded/cortex-m.git", branch = "master", features = ["device"]}
-

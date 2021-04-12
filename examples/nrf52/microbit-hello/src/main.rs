@@ -11,7 +11,7 @@
 use core::future::Future;
 use core::pin::Pin;
 use defmt_rtt as _;
-use drogue_device_platform_nrf::{self as drogue, *};
+use drogue_device_kernel::{self as drogue, *};
 use embassy_nrf::Peripherals;
 use panic_probe as _;
 

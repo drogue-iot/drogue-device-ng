@@ -13,9 +13,9 @@ version = "0.2"
 [dependencies.defmt-rtt]
 version = "0.2"
 
-[dependencies.drogue-device-platform-nrf]
-path = "../../../platform/nrf"
-features = ["defmt", "defmt-trace", "52833" ]
+[dependencies.drogue-device-kernel]
+path = "../../../kernel"
+features = ["defmt", "defmt-trace" ]
 
 # TODO: Can we get rid of this?
 [dependencies.embassy]
@@ -23,6 +23,7 @@ version = "0.1.0"
 # git = "https://github.com/embassy-rs/embassy.git"
 git = "https://github.com/lulf/embassy.git"
 branch = "signal-std"
+features = ["defmt", "defmt-trace" ]
 
 # TODO: Can we get rid of this?
 [dependencies.embassy-nrf]
@@ -30,7 +31,7 @@ version = "0.1.0"
 # git = "https://github.com/embassy-rs/embassy.git"
 git = "https://github.com/lulf/embassy.git"
 branch = "signal-std"
-default-features = false
+features = ["defmt", "defmt-trace", "52833" ]
 
 [dependencies.cortex-m-rt]
 version = "0.6"
