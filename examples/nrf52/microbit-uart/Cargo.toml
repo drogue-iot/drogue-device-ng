@@ -21,21 +21,14 @@ version = "0.1.0"
 git = "https://github.com/lulf/embassy.git"
 branch = "signal-std"
 
-[dependencies.embassy-nrf]
-version = "0.1.0"
-# git = "https://github.com/embassy-rs/embassy.git"
-git = "https://github.com/lulf/embassy.git"
-branch = "signal-std"
+[target.'cfg(target_arch="arm")'.dependencies.cortex-m-rt]
+version = "0.6"
 
-[dependencies.embassy-traits]
-version = "0.1.0"
-# git = "https://github.com/embassy-rs/embassy.git"
-git = "https://github.com/lulf/embassy.git"
-branch = "signal-std"
+[target.'cfg(target_arch="arm")'.dependencies.cortex-m]
+version = "0.7"
+features = ["inline-asm"]
 
 [dependencies]
-cortex-m = { version = "0.7.1", features = ["inline-asm"] }
-cortex-m-rt = "0.6.13"
 embedded-hal    = { version = "0.2.4" }
 panic-probe = "0.1.0"
 futures = { version = "0.3.8", default-features = false, features = ["async-await"] }
