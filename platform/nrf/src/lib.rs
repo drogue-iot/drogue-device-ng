@@ -1,5 +1,4 @@
 #![no_std]
-#![no_main]
 #![allow(incomplete_features)]
 #![feature(min_type_alias_impl_trait)]
 #![feature(impl_trait_in_bindings)]
