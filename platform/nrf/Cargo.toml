@@ -7,34 +7,39 @@ edition = "2018"
 name = "drogue-device-platform-nrf"
 version = "0.1.0"
 
-[lib]
+[features]
+defmt-trace = [ ]
+defmt-debug = [ ]
+defmt-info = [ ]
+defmt-warn = [ ]
+defmt-error = [ ]
 
-[dependencies.embassy]
-version = "0.1.0"
-# git = "https://github.com/embassy-rs/embassy.git"
-git = "https://github.com/lulf/embassy.git"
-branch = "signal-std"
+52833 = [ "embassy-nrf/52833" ]
+
+[dependencies.defmt]
+version = "0.2"
+optional = true
+
+[dependencies.log]
+version = "0.4"
+optional = true
+
+[dependencies.drogue-device-kernel]
+path = "../../kernel"
 default-features = false
+
+[dependencies.drogue-device-macros]
+path = "../../macros"
 
 [target.'cfg(target_arch="arm")'.dependencies.embassy-nrf]
 version = "0.1.0"
 # git = "https://github.com/embassy-rs/embassy.git"
 git = "https://github.com/lulf/embassy.git"
 branch = "signal-std"
-features = ["52833"]
+default-features = false
 
 [dependencies.embassy-traits]
 version = "0.1.0"
 # git = "https://github.com/embassy-rs/embassy.git"
 git = "https://github.com/lulf/embassy.git"
 branch = "signal-std"
-
-[dependencies.drogue-device-kernel]
-path = "../../kernel"
-features = ["log"]
-
-[dependencies.drogue-device-macros]
-path = "../../macros"
-
-[features]
-log = ["drogue-device-kernel/log", "embassy/log"]

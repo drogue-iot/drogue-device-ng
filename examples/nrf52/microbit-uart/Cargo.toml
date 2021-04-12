@@ -7,28 +7,47 @@ edition = "2018"
 name = "drogue-device-example-nrf52-microbit-uart"
 version = "0.1.0"
 
-[dependencies.log]
-version = "0.4"
+[dependencies.defmt]
+version = "0.2"
+
+[dependencies.defmt-rtt]
+version = "0.2"
 
 [dependencies.drogue-device-platform-nrf]
 path = "../../../platform/nrf"
-features = ["log"]
+features = ["defmt", "defmt-trace", "52833" ]
 
-# TODO: Get rid of these
 [dependencies.embassy]
 version = "0.1.0"
 # git = "https://github.com/embassy-rs/embassy.git"
 git = "https://github.com/lulf/embassy.git"
 branch = "signal-std"
 
-[target.'cfg(target_arch="arm")'.dependencies.cortex-m-rt]
+[dependencies.cortex-m-rt]
 version = "0.6"
 
-[target.'cfg(target_arch="arm")'.dependencies.cortex-m]
+[dependencies.cortex-m]
 version = "0.7"
 features = ["inline-asm"]
 
-[dependencies]
-embedded-hal    = { version = "0.2.4" }
-panic-probe = "0.1.0"
-futures = { version = "0.3.8", default-features = false, features = ["async-await"] }
+[dependencies.embassy-nrf]
+version = "0.1.0"
+# git = "https://github.com/embassy-rs/embassy.git"
+git = "https://github.com/lulf/embassy.git"
+branch = "signal-std"
+default-features = false
+
+[dependencies.panic-probe]
+version = "0.2.0"
+features = ["print-defmt"]
+
+[features]
+default = [
+    "defmt-default",
+]
+defmt-default = []
+defmt-trace = [ ]
+defmt-debug = [ ]
+defmt-info = [ ]
+defmt-warn = [ ]
+defmt-error = [ ]

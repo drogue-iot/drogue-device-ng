@@ -51,8 +51,8 @@ pub struct MyDevice {
 
 impl DeviceMounter for MyDevice {
     fn mount(&'static self) {
-        self.a.mount();
-        self.b.mount();
+        self.a.mount(());
+        self.b.mount(());
     }
 }
 
@@ -71,8 +71,8 @@ fn configure() -> MyDevice {
 
 #[drogue::main]
 async fn main(context: DeviceContext<MyDevice>) {
-    let a_addr = context.device().a.mount();
-    let b_addr = context.device().b.mount();
+    let a_addr = context.device().a.address();
+    let b_addr = context.device().b.address();
     loop {
         Timer::after(Duration::from_secs(1)).await;
         a_addr.send(&SayHello("World")).await;

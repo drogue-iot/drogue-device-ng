@@ -1,4 +1,6 @@
 #![no_std]
+#![no_main]
+#![macro_use]
 #![allow(incomplete_features)]
 #![feature(generic_associated_types)]
 #![feature(min_type_alias_impl_trait)]
@@ -8,7 +10,9 @@
 
 use core::future::Future;
 use core::pin::Pin;
+use defmt_rtt as _;
 use drogue_device_platform_nrf::{self as drogue, *};
+use embassy_nrf::Peripherals;
 use panic_probe as _;
 
 pub struct MyActor {
@@ -29,7 +33,7 @@ impl Actor for MyActor {
     type OnMessageFuture<'a> = impl Future<Output = ()> + 'a;
 
     fn on_start(self: Pin<&'_ mut Self>) -> Self::OnStartFuture<'_> {
-        async move { log::info!("[{}] started!", self.name) }
+        async move { defmt::info!("[{}] started!", self.name) }
     }
 
     fn on_message<'m>(
@@ -37,7 +41,7 @@ impl Actor for MyActor {
         message: &'m Self::Message<'m>,
     ) -> Self::OnMessageFuture<'m> {
         async move {
-            log::info!("[{}] hello {}: {}", self.name, message.0, self.counter);
+            defmt::info!("[{}] hello {}: {}", self.name, message.0, self.counter);
             self.counter += 1;
         }
     }
@@ -53,8 +57,8 @@ pub struct MyDevice {
 
 impl DeviceMounter for MyDevice {
     fn mount(&'static self) {
-        self.a.mount();
-        self.b.mount();
+        self.a.mount(());
+        self.b.mount(());
     }
 }
 
@@ -68,11 +72,10 @@ fn configure() -> MyDevice {
 
 #[drogue::main]
 async fn main(context: DeviceContext<MyDevice>) {
-    let a_addr = context.device().a.mount();
-    let b_addr = context.device().b.mount();
-    loop {
-        Timer::after(Duration::from_secs(1)).await;
-        a_addr.send(&SayHello("World")).await;
-        b_addr.send(&SayHello("You")).await;
-    }
+    defmt::info!("Hello!");
+    let a_addr = context.device().a.address();
+    let b_addr = context.device().b.address();
+    a_addr.send(&SayHello("World")).await;
+    b_addr.send(&SayHello("You")).await;
+    loop {}
 }

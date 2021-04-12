@@ -4,7 +4,7 @@
 #![feature(type_alias_impl_trait)]
 
 pub use drogue_device_kernel::*;
-pub use drogue_device_macros::{main, configure, Device};
+pub use drogue_device_macros::{configure, main, Device};
 pub use embassy_std::Executor;
 
 #[cfg(test)]

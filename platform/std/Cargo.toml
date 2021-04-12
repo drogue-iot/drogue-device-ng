@@ -21,12 +21,19 @@ version = "0.1.0"
 git = "https://github.com/lulf/embassy.git"
 branch = "signal-std"
 
+[dependencies.log]
+version = "0.4"
+
 [dependencies.drogue-device-kernel]
 path = "../../kernel"
-features = ["log"]
+features = ["std", "log"]
 
 [dependencies.drogue-device-macros]
 path = "../../macros"
 
 [features]
-log = ["drogue-device-kernel/log", "embassy/log"]
+defmt-trace = [ ]
+defmt-debug = [ ]
+defmt-info = [ ]
+defmt-warn = [ ]
+defmt-error = [ ]
