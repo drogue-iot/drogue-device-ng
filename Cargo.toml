@@ -2,6 +2,7 @@
 members = [
     "kernel",
     "macros",
+    "xtask",
 ]
 
 [patch.crates-io]

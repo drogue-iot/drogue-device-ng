@@ -1,3 +1,4 @@
+#![macro_use]
 #![cfg_attr(not(feature = "std"), no_std)]
 #![allow(incomplete_features)]
 #![feature(min_type_alias_impl_trait)]
