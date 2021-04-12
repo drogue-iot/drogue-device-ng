@@ -179,8 +179,8 @@ pub fn main(_: TokenStream, item: TokenStream) -> TokenStream {
             #task_fn_body
         }
 
-       // #[cortex_m_rt::entry]
-        fn main() -> ! {
+        //#[cortex_m_rt::entry]
+        fn main() {
             let (executor, device) = {
                 let executor = EXECUTOR.put(drogue::Executor::new());
                 let device = __drogue_configure();

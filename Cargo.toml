@@ -3,7 +3,9 @@ members = [
     "kernel",
     "macros",
     "platform/std",
+    "platform/nrf",
     "examples/std/hello",
+    "examples/nrf52/microbit-uart",
 ]
 
 [patch.crates-io]
