@@ -5,7 +5,7 @@ members = [
     "platform/std",
     "platform/nrf",
     "examples/std/hello",
-    "examples/nrf52/microbit-uart",
+    "examples/nrf52/microbit-hello",
 ]
 
 [patch.crates-io]

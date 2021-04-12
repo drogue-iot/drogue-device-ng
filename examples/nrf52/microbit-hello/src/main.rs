@@ -72,10 +72,11 @@ fn configure() -> MyDevice {
 
 #[drogue::main]
 async fn main(context: DeviceContext<MyDevice>) {
-    defmt::info!("Hello!");
     let a_addr = context.device().a.address();
     let b_addr = context.device().b.address();
-    a_addr.send(&SayHello("World")).await;
-    b_addr.send(&SayHello("You")).await;
-    loop {}
+    loop {
+        Timer::after(Duration::from_secs(1)).await;
+        a_addr.send(&SayHello("World")).await;
+        b_addr.send(&SayHello("You")).await;
+    }
 }

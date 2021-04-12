@@ -21,3 +21,9 @@ version = "0.1.0"
 # git = "https://github.com/embassy-rs/embassy.git"
 git = "https://github.com/lulf/embassy.git"
 branch = "signal-std"
+
+[dependencies.embassy-std]
+version = "0.1.0"
+# git = "https://github.com/embassy-rs/embassy.git"
+git = "https://github.com/lulf/embassy.git"
+branch = "signal-std"

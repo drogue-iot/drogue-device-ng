@@ -138,7 +138,7 @@ pub fn main(_: TokenStream, item: TokenStream) -> TokenStream {
             .sig
             .span()
             .unwrap()
-            .error("task functions must be async")
+            .error("main function must be async")
             .emit();
         fail = true;
     }
@@ -172,28 +172,19 @@ pub fn main(_: TokenStream, item: TokenStream) -> TokenStream {
 
     let result = quote! {
 
-        static EXECUTOR: drogue::Forever<drogue::Executor> = drogue::Forever::new();
-
-        #[drogue::task]
+        #[embassy::task]
         async fn __drogue_main(#args) {
             #task_fn_body
         }
 
-        #[cortex_m_rt::entry]
-        fn main() -> ! {
-            let (executor, device) = {
-                let executor = EXECUTOR.put(drogue::Executor::new());
-                let device = __drogue_configure();
-                (executor, device)
-            };
+        #[embassy::main]
+        async fn main(spawner: drogue::Spawner) {
+            let device = __drogue_configure();
 
             let context = DeviceContext::new(device);
             context.device().mount();
-            executor.run(|spawner| {
-                context.device().start(spawner);
-                spawner.spawn(__drogue_main(context)).unwrap();
-            })
-
+            context.device().start(spawner);
+            spawner.spawn(__drogue_main(context)).unwrap();
         }
     };
     result.into()
