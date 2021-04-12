@@ -24,7 +24,7 @@ features = ["defmt", "defmt-trace" ]
 version = "0.1.0"
 # git = "https://github.com/embassy-rs/embassy.git"
 git = "https://github.com/lulf/embassy.git"
-branch = "signal-std"
+branch = "drogue-device"
 features = ["defmt", "defmt-trace" ]
 
 # TODO: Can we get rid of this?
@@ -32,7 +32,7 @@ features = ["defmt", "defmt-trace" ]
 version = "0.1.0"
 # git = "https://github.com/embassy-rs/embassy.git"
 git = "https://github.com/lulf/embassy.git"
-branch = "signal-std"
+branch = "drogue-device"
 features = ["defmt", "defmt-trace", "52833" ]
 
 [dependencies.cortex-m-rt]
