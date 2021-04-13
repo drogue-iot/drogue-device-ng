@@ -37,7 +37,7 @@ fn configure() -> MyDevice {
 }
 
 #[drogue::main]
-async fn main(context: DeviceContext<MyDevice>) {
+async fn main(mut context: DeviceContext<MyDevice>) {
     context.device().server.mount(());
     context.start();
 }

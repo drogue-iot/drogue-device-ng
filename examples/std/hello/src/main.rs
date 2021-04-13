@@ -64,7 +64,7 @@ fn configure() -> MyDevice {
 }
 
 #[drogue::main]
-async fn main(context: DeviceContext<MyDevice>) {
+async fn main(mut context: DeviceContext<MyDevice>) {
     let a_addr = context.device().a.mount(());
     let b_addr = context.device().b.mount(());
 
