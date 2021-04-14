@@ -20,6 +20,10 @@ path = "../macros"
 path = "../apis/lora"
 optional = true
 
+[dependencies.drogue-device-rak811]
+path = "../drivers/lora/rak811"
+optional = true
+
 [dependencies.drogue-device-sx127x]
 path = "../drivers/lora/sx127x"
 optional = true
@@ -61,6 +65,7 @@ optional = true
 [features]
 "chip+nrf52833" = ["embassy-nrf", "embassy-nrf/52833"]
 "lora+sx127x" = ["drogue-device-lora", "drogue-device-sx127x"]
+"lora+rak811" = ["drogue-device-lora", "drogue-device-rak811"]
 std = ["embassy/std", "embassy-std"]
 defmt-trace = [ ]
 defmt-debug = [ ]
