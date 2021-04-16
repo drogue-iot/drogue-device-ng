@@ -3,6 +3,7 @@ use core::marker::PhantomData;
 use core::pin::Pin;
 use drogue_device_kernel::{
     actor::{Actor, Address},
+    channel::consts,
     util::ImmediateFuture,
 };
 use embassy_traits::gpio::WaitForAnyEdge;
@@ -66,6 +67,7 @@ impl<
         A: Actor<Message<'a> = M> + 'a,
     > Actor for Button<'a, P, M, A>
 {
+    type QueueLength<'m> where 'a: 'm = consts::U0;
     type Configuration = Address<'a, A>;
     type Message<'m> where 'a: 'm = ();
     type OnStartFuture<'m> where 'a: 'm = impl Future<Output = ()> + 'm;
