@@ -31,29 +31,29 @@ optional = true
 
 
 [dependencies.embassy]
-#git = "https://github.com/drogue-iot/embassy.git"
-#branch = "drogue"
-path = "../../../embassy/embassy"
+git = "https://github.com/drogue-iot/embassy.git"
+branch = "drogue"
+#path = "../../../embassy/embassy"
 default-features = false
 
 [dependencies.embassy-nrf]
-#git = "https://github.com/drogue-iot/embassy.git"
-#branch = "drogue"
-path = "../../../embassy/embassy-nrf"
+git = "https://github.com/drogue-iot/embassy.git"
+branch = "drogue"
+#path = "../../../embassy/embassy-nrf"
 default-features = false
 optional = true
 
 [dependencies.embassy-std]
-#git = "https://github.com/drogue-iot/embassy.git"
-#branch = "drogue"
-path = "../../../embassy/embassy-std"
+git = "https://github.com/drogue-iot/embassy.git"
+branch = "drogue"
+#path = "../../../embassy/embassy-std"
 default-features = false
 optional = true
 
 [dev-dependencies.embassy-std]
-#git = "https://github.com/drogue-iot/embassy.git"
-#branch = "drogue"
-path = "../../../embassy/embassy-std"
+git = "https://github.com/drogue-iot/embassy.git"
+branch = "drogue"
+#path = "../../../embassy/embassy-std"
 default-features = false
 
 [dependencies.log]
