@@ -2,100 +2,111 @@ use core::{
     cell::{RefCell, UnsafeCell},
     future::Future,
     pin::Pin,
-    task::{Context, Poll},
+    task::{Context, Poll, Waker},
 };
 use embassy::util::AtomicWaker;
 use heapless::spsc::{Consumer, Producer, Queue};
 pub use heapless::{consts, ArrayLength};
 
-struct ChannelInner<'a, T, N: ArrayLength<T>> {
+struct ChannelInner<T, N: ArrayLength<T>> {
     queue: UnsafeCell<Queue<T, N>>,
-    producer: RefCell<Option<Producer<'a, T, N>>>,
-    consumer: RefCell<Option<Consumer<'a, T, N>>>,
     producer_waker: AtomicWaker,
     consumer_waker: AtomicWaker,
 }
 
-impl<'a, T, N: 'a + ArrayLength<T>> Default for ChannelInner<'a, T, N> {
+impl<T, N: ArrayLength<T>> Default for ChannelInner<T, N> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<'a, T, N: 'a + ArrayLength<T>> ChannelInner<'a, T, N> {
+impl<T, N: ArrayLength<T>> ChannelInner<T, N> {
     pub fn new() -> Self {
         Self {
             queue: UnsafeCell::new(Queue::new()),
-            producer: RefCell::new(None),
-            consumer: RefCell::new(None),
             producer_waker: AtomicWaker::new(),
             consumer_waker: AtomicWaker::new(),
         }
     }
 
-    fn split(&'a self) {
-        let (producer, consumer) = unsafe { (&mut *self.queue.get()).split() };
-        self.producer.borrow_mut().replace(producer);
-        self.consumer.borrow_mut().replace(consumer);
+    fn register_consumer(&self, waker: Waker) {
+        self.consumer_waker.register(waker);
     }
 
-    fn poll_dequeue(&self, cx: &mut Context<'_>) -> Poll<T> {
-        if let Some(value) = self.consumer.borrow_mut().as_mut().unwrap().dequeue() {
-            self.producer_waker.wake();
-            Poll::Ready(value)
-        } else {
-            self.consumer_waker.register(cx.waker());
-            Poll::Pending
-        }
+    fn register_producer(&self, waker: Waker) {
+        self.producer_waker.register(waker);
+    }
+
+    fn wake_producer(&self) {
+        self.producer_waker.wake();
+    }
+
+    fn wake_consumer(&self) {
+        self.consumer_waker.wake();
+    }
+
+    fn split<'a>(&'a self) -> (ChannelProducer<'a, T, N>, ChannelConsumer<'a, T, N>) {
+        let (producer, consumer) = unsafe { (&mut *self.queue.get()).split() };
+        (
+            ChannelProducer::new(producer, self),
+            ChannelConsumer::new(consumer, self),
+        )
+    }
+}
+
+pub struct Channel<T, N: ArrayLength<T>> {
+    inner: ChannelInner<T, N>,
+}
+
+impl<T, N: ArrayLength<T>> Default for Channel<T, N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T, N: ArrayLength<T>> Channel<T, N> {
+    pub fn new() -> Self {
+        let inner = ChannelInner::new();
+        Self { inner }
+    }
+
+    pub fn split<'a>(&'a self) -> (ChannelProducer<'a, T, N>, ChannelConsumer<'a, T, N>) {
+        self.inner.split()
+    }
+}
+
+struct ChannelProducer<'a, T, N: ArrayLength<T>> {
+    inner: &'a ChannelInner<T, N>,
+    producer: Producer<'a, T, N>,
+}
+
+impl<'a, T, N: 'a + ArrayLength<T>> ChannelProducer<'a, T, N> {
+    pub fn new(producer: Producer<'a, T, N>, inner: &'a ChannelInner<T, N>) -> Self {
+        Self { producer, inner }
     }
 
     fn poll_enqueue(&self, cx: &mut Context<'_>, element: &mut Option<T>) -> Poll<()> {
-        let mut producer = self.producer.borrow_mut();
-        if producer.as_mut().unwrap().ready() {
+        if self.producer.ready() {
             let value = element.take().unwrap();
-            producer.as_mut().unwrap().enqueue(value).ok().unwrap();
-            self.consumer_waker.wake();
+            self.producer.enqueue(value).ok().unwrap();
+            self.inner.wake_consumer();
             Poll::Ready(())
         } else {
             self.producer_waker.register(cx.waker());
             Poll::Pending
         }
     }
-}
 
-pub struct Channel<'a, T, N: ArrayLength<T>> {
-    inner: ChannelInner<'a, T, N>,
-}
-
-impl<'a, T, N: 'a + ArrayLength<T>> Default for Channel<'a, T, N> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<'a, T, N: 'a + ArrayLength<T>> Channel<'a, T, N> {
-    pub fn new() -> Self {
-        let inner = ChannelInner::new();
-        Self { inner }
-    }
-
-    pub fn initialize(&'a self) {
-        self.inner.split();
-    }
-
-    pub fn send(&'a self, value: T) -> ChannelSend<'a, T, N> {
+    pub fn send<'m>(&'m self, value: T) -> ChannelSend<'m, T, N> {
         ChannelSend {
-            inner: &self.inner,
+            producer: &self,
             element: Some(value),
         }
-    }
-    pub fn receive(&'a self) -> ChannelReceive<'a, T, N> {
-        ChannelReceive { inner: &self.inner }
     }
 }
 
 pub struct ChannelSend<'a, T, N: ArrayLength<T>> {
-    inner: &'a ChannelInner<'a, T, N>,
+    producer: &'a ChannelProducer<'a, T, N>,
     element: Option<T>,
 }
 
@@ -105,18 +116,67 @@ impl<'a, T, N: ArrayLength<T>> Future for ChannelSend<'a, T, N> {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.inner.poll_enqueue(cx, &mut self.element)
+        self.producer.poll_enqueue(cx, &mut self.element)
+    }
+}
+
+struct ChannelConsumer<'a, T, N: ArrayLength<T>> {
+    inner: &'a ChannelInner<T, N>,
+    consumer: Consumer<'a, T, N>,
+}
+
+impl<'a, T, N: 'a + ArrayLength<T>> ChannelConsumer<'a, T, N> {
+    pub fn new(consumer: Consumer<'a, T, N>, inner: &'a ChannelInner<T, N>) -> Self {
+        Self { consumer, inner }
+    }
+
+    fn poll_try_dequeue(&self) -> Poll<Option<T>> {
+        if let Some(value) = self.consumer.dequeue() {
+            self.inner.wake_producer();
+            Poll::Ready(Some(value))
+        } else {
+            Poll::Ready(None)
+        }
+    }
+
+    fn poll_dequeue(&self, cx: &mut Context<'_>) -> Poll<T> {
+        if let Some(value) = self.consumer.dequeue() {
+            self.inner.wake_producer();
+            Poll::Ready(value)
+        } else {
+            self.inner.register_consumer(cx.waker());
+            Poll::Pending
+        }
+    }
+
+    pub fn receive<'m>(&'m self) -> ChannelReceive<'m, T, N> {
+        ChannelReceive { consumer: &self }
+    }
+    pub fn try_receive<'m>(&'m self) -> ChannelTryReceive<'m, T, N> {
+        ChannelTryReceive { consumer: &self }
     }
 }
 
 pub struct ChannelReceive<'a, T, N: ArrayLength<T>> {
-    inner: &'a ChannelInner<'a, T, N>,
+    consumer: &'a ChannelConsumer<'a, T, N>,
 }
 
 impl<'a, T, N: ArrayLength<T>> Future for ChannelReceive<'a, T, N> {
     type Output = T;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.inner.poll_dequeue(cx)
+        self.consumer.poll_dequeue(cx)
+    }
+}
+
+pub struct ChannelTryReceive<'a, T, N: ArrayLength<T>> {
+    consumer: &'a ChannelConsumer<'a, T, N>,
+}
+
+impl<'a, T, N: ArrayLength<T>> Future for ChannelTryReceive<'a, T, N> {
+    type Output = Option<T>;
+
+    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+        self.consumer.poll_try_dequeue()
     }
 }

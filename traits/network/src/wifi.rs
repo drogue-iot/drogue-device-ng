@@ -8,7 +8,8 @@ pub enum Join {
     Wpa {
         ssid: String<U32>,
         password: String<U32>,
-    },
+    }
+,
 }
 
 #[derive(Debug)]

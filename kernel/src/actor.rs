@@ -1,6 +1,6 @@
-use crate::channel::{consts, ArrayLength, Channel, ChannelSend};
+use crate::channel::{consts, ArrayLength, Channel, ChannelReceiver, channelproducerllllhhhuuH, ChannelSend};
 use crate::signal::{SignalFuture, SignalSlot};
-use core::cell::UnsafeCell;
+use core::cell::{RefCell, UnsafeCell};
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
@@ -110,16 +110,20 @@ impl<'a, A: Actor> Clone for Address<'a, A> {
 
 pub struct ActorContext<'a, A: Actor> {
     pub actor: UnsafeCell<A>,
-    pub channel: Channel<'a, ActorMessage<'a, A>, A::MaxQueueSize<'a>>,
+    pub channel: Channel<ActorMessage<'a, A>, A::MaxQueueSize<'a>>,
+    producer: RefCell<Option<ChannelProducer<'a, ActorMessage<'a, A>, A::MaxQueueSize<'a>>>>,
+    consumer: RefCell<Option<ChannelConsumer<'a, ActorMessage<'a, A>, A::MaxQueueSize<'a>>>>,
     signals: UnsafeCell<[SignalSlot; 4]>,
 }
 
 impl<'a, A: Actor> ActorContext<'a, A> {
     pub fn new(actor: A) -> Self {
-        let channel: Channel<'a, ActorMessage<A>, A::MaxQueueSize<'a>> = Channel::new();
+        let channel: Channel<ActorMessage<A>, A::MaxQueueSize<'a>> = Channel::new();
         Self {
             actor: UnsafeCell::new(actor),
             channel,
+            producer: RefCell::new(None),
+            consumer: RefCell::new(None),
             signals: UnsafeCell::new(Default::default()),
         }
     }
@@ -129,7 +133,7 @@ impl<'a, A: Actor> ActorContext<'a, A> {
     where
         A: Unpin,
     {
-        let channel = &self.channel;
+        let channel = &self.consumer.borrow_mut().as_ref().unwrap();
         let actor = unsafe { &mut *self.actor.get() };
         core::pin::Pin::new(actor).on_start().await;
         loop {
@@ -196,7 +200,9 @@ impl<'a, A: Actor> ActorContext<'a, A> {
     /// Mount the underloying actor and initialize the channel.
     pub fn mount(&'a self, config: A::Configuration) -> Address<'a, A> {
         unsafe { &mut *self.actor.get() }.on_mount(config);
-        self.channel.initialize();
+        let (producer, consumer) = self.channel.split();
+        self.producer.borrow_mut().replace(producer);
+        self.consumer.borrow_mut().replace(consumer);
         Address::new(self)
     }
 }
