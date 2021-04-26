@@ -1,6 +1,6 @@
-use crate::channel::{consts, ArrayLength, Channel, ChannelReceiver, channelproducerllllhhhuuH, ChannelSend};
+use crate::channel::{consts, ArrayLength, Channel, ChannelReceiver, ChannelSend, ChannelSender};
 use crate::signal::{SignalFuture, SignalSlot};
-use core::cell::{RefCell, UnsafeCell};
+use core::cell::UnsafeCell;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
@@ -111,8 +111,9 @@ impl<'a, A: Actor> Clone for Address<'a, A> {
 pub struct ActorContext<'a, A: Actor> {
     pub actor: UnsafeCell<A>,
     pub channel: Channel<ActorMessage<'a, A>, A::MaxQueueSize<'a>>,
-    producer: RefCell<Option<ChannelProducer<'a, ActorMessage<'a, A>, A::MaxQueueSize<'a>>>>,
-    consumer: RefCell<Option<ChannelConsumer<'a, ActorMessage<'a, A>, A::MaxQueueSize<'a>>>>,
+    channel_sender: UnsafeCell<Option<ChannelSender<'a, ActorMessage<'a, A>, A::MaxQueueSize<'a>>>>,
+    channel_receiver:
+        UnsafeCell<Option<ChannelReceiver<'a, ActorMessage<'a, A>, A::MaxQueueSize<'a>>>>,
     signals: UnsafeCell<[SignalSlot; 4]>,
 }
 
@@ -122,8 +123,8 @@ impl<'a, A: Actor> ActorContext<'a, A> {
         Self {
             actor: UnsafeCell::new(actor),
             channel,
-            producer: RefCell::new(None),
-            consumer: RefCell::new(None),
+            channel_sender: UnsafeCell::new(None),
+            channel_receiver: UnsafeCell::new(None),
             signals: UnsafeCell::new(Default::default()),
         }
     }
@@ -133,11 +134,11 @@ impl<'a, A: Actor> ActorContext<'a, A> {
     where
         A: Unpin,
     {
-        let channel = &self.consumer.borrow_mut().as_ref().unwrap();
         let actor = unsafe { &mut *self.actor.get() };
+        let receiver = unsafe { &*self.channel_receiver.get() }.as_ref().unwrap();
         core::pin::Pin::new(actor).on_start().await;
         loop {
-            let message = channel.receive().await;
+            let message = receiver.receive().await;
             let actor = unsafe { &mut *self.actor.get() };
             match message {
                 ActorMessage::Send(message, signal) => {
@@ -180,7 +181,10 @@ impl<'a, A: Actor> ActorContext<'a, A> {
         let signal = self.acquire_signal();
         let message = unsafe { core::mem::transmute::<_, &'a mut A::Message<'a>>(message) };
         let message = ActorMessage::new_send(message, signal);
-        let chan = self.channel.send(message);
+        let chan = {
+            let sender = unsafe { &mut *self.channel_sender.get() }.as_mut().unwrap();
+            sender.send(message)
+        };
         let sig = SignalFuture::new(signal);
         SendFuture::new(chan, Some(sig))
     }
@@ -193,16 +197,19 @@ impl<'a, A: Actor> ActorContext<'a, A> {
     {
         let message = ActorMessage::new_notify(message);
 
-        let chan = self.channel.send(message);
+        let chan = {
+            let sender = unsafe { &mut *self.channel_sender.get() }.as_mut().unwrap();
+            sender.send(message)
+        };
         SendFuture::new(chan, None)
     }
 
     /// Mount the underloying actor and initialize the channel.
     pub fn mount(&'a self, config: A::Configuration) -> Address<'a, A> {
         unsafe { &mut *self.actor.get() }.on_mount(config);
-        let (producer, consumer) = self.channel.split();
-        self.producer.borrow_mut().replace(producer);
-        self.consumer.borrow_mut().replace(consumer);
+        let (sender, receiver) = self.channel.split();
+        unsafe { &mut *self.channel_sender.get() }.replace(sender);
+        unsafe { &mut *self.channel_receiver.get() }.replace(receiver);
         Address::new(self)
     }
 }
