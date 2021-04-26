@@ -4,7 +4,7 @@ members = [
     "traits/network",
     "actors",
     "drivers/lora/sx127x",
-#    "drivers/network/esp8266",
+    "drivers/network/esp8266",
     "device",
     "kernel",
     "macros",

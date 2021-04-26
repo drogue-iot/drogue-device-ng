@@ -19,6 +19,7 @@ use drogue_network::{
     wifi::{Join, JoinError, WifiSupplicant},
 };
 use embassy::traits::uart::{Read, Write};
+use futures::future::{select, Either};
 //use crate::driver::queue::spsc_queue::*;
 use buffer::Buffer;
 use embedded_hal::digital::v2::OutputPin;
@@ -46,9 +47,9 @@ where
     RESET: OutputPin + 'static,
 {
     socket_pool: SocketPool,
-    command_producer: ChannelProducer<'a, Command, consts::U2>,
-    response_consumer: ChannelConsumer<'a, AtResponse, consts::U2>,
-    notification_consumer: ChannelConsumer<'a, AtResponse, consts::U2>,
+    command_producer: ChannelSender<'a, Command, consts::U2>,
+    response_consumer: ChannelReceiver<'a, AtResponse, consts::U2>,
+    notification_consumer: ChannelReceiver<'a, AtResponse, consts::U2>,
 }
 
 pub struct Esp8266Modem<'a, UART, ENABLE, RESET>
@@ -59,9 +60,9 @@ where
 {
     uart: UART,
     parse_buffer: Buffer,
-    command_consumer: ChannelConsumer<'a, Command, consts::U2>,
-    response_producer: ChannelProducer<'a, AtResponse, consts::U2>,
-    notification_producer: ChannelProducer<'a, AtResponse, consts::U2>,
+    command_consumer: ChannelReceiver<'a, Command, consts::U2>,
+    response_producer: ChannelSender<'a, AtResponse, consts::U2>,
+    notification_producer: ChannelSender<'a, AtResponse, consts::U2>,
 }
 
 pub struct Esp8266Wifi<'a, UART, ENABLE, RESET>
@@ -72,8 +73,9 @@ where
 {
     enable: ENABLE,
     reset: RESET,
-    response_channel: Channel<'a, AtResponse, consts::U2>,
-    notification_channel: Channel<'a, AtResponse, consts::U2>,
+    command_channel: Channel<Command, consts::U2>,
+    response_channel: Channel<AtResponse, consts::U2>,
+    notification_channel: Channel<AtResponse, consts::U2>,
 }
 
 impl<'a, UART, ENABLE, RESET> Esp8266Wifi<'a, UART, ENABLE, RESET>
@@ -118,10 +120,10 @@ where
                 | AtResponse::DnsFail
                 | AtResponse::UnlinkFail
                 | AtResponse::IpAddresses(..) => {
-                    self.response_queue.send(response).await;
+                    self.response_producer.send(response).await;
                 }
                 AtResponse::Closed(..) | AtResponse::DataAvailable { .. } => {
-                    self.notification_queue.send(response).await;
+                    self.notification_producer.send(response).await;
                 }
                 AtResponse::WifiConnected => {
                     log::info!("wifi connected");
@@ -138,15 +140,22 @@ where
     }
 
     // Await input from uart and attempt to digest input
-    pub async fn process(&'a mut self) -> Result<(), AdapterError> {
-        let mut buf = [0; 1];
+    pub async fn run(&'a mut self) -> Result<(), AdapterError> {
+        loop {
+            let mut buf = [0; 1];
+            let command_fut = self.command_consumer.receive();
+            let uart_fut = self.uart.read(&mut buf[..]);
 
-        self.uart
-            .read(&mut buf[..])
-            .await
-            .map_err(|_| AdapterError::ReadError)?;
-        self.parse_buffer.write(buf[0]).unwrap();
-        self.digest().await
+            match select(command_fut, uart_fut).await {
+                Either::Left((r, _)) => {
+                    // Write command to uart
+                }
+                Either::Right(_) => {
+                    self.parse_buffer.write(buf[0]).unwrap();
+                    self.digest().await
+                }
+            }
+        }
     }
 
     /*
