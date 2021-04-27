@@ -1,7 +1,13 @@
 #![no_std]
 #![allow(incomplete_features)]
+#![allow(dead_code)]
 #![feature(min_type_alias_impl_trait)]
 #![feature(generic_associated_types)]
+
+//! Esp8266 Async Driver
+//!
+//! An async driver for the Esp8266 AT-command firmware. The driver implements the drogue-network APIs for
+//! WifiSupplicant and TcpStack.
 
 pub(crate) mod fmt;
 
@@ -27,12 +33,12 @@ use embedded_hal::digital::v2::OutputPin;
 use futures::future::{select, Either};
 use futures::pin_mut;
 use heapless::{String, Vec};
-use protocol::{Command, ConnectionType, Response as AtResponse, WiFiMode};
+use protocol::{Command, ConnectionType, Response as AtResponse};
 
 pub const BUFFER_LEN: usize = 512;
 
 #[derive(Debug)]
-pub enum AdapterError {
+pub enum DriverError {
     UnableToInitialize,
     NoAvailableSockets,
     Timeout,
@@ -96,7 +102,7 @@ impl Esp8266Driver {
         let (rp, rc) = self.response_channel.split();
         let (np, nc) = self.notification_channel.split();
 
-        let mut modem = Esp8266Modem::new(uart, enable, reset, cc, rp, np);
+        let modem = Esp8266Modem::new(uart, enable, reset, cc, rp, np);
         let controller = Esp8266Controller::new(cp, rc, nc);
 
         (controller, modem)
@@ -144,95 +150,97 @@ where
             let result = uart_read(&mut self.uart, &mut rx_buf[..]).await;
             match result {
                 Ok(c) => {
-                    buffer[pos] = rx_buf[0];
-                    pos += 1;
-                    if pos >= READY.len() && buffer[pos - READY.len()..pos] == READY {
-                        info!("adapter is ready");
-                        self.disable_echo()
-                            .await
-                            .expect("Error disabling echo mode");
-                        info!("Echo disabled");
-                        self.enable_mux().await.expect("Error enabling mux");
-                        info!("Mux enabled");
-                        self.set_recv_mode()
-                            .await
-                            .expect("Error setting receive mode");
-                        info!("Recv mode configured");
-                        self.set_mode().await.expect("Error setting station mode");
-                        info!("adapter configured");
-                        break;
+                    if c > 0 {
+                        buffer[pos] = rx_buf[0];
+                        pos += 1;
+                        if pos >= READY.len() && buffer[pos - READY.len()..pos] == READY {
+                            info!("adapter is ready");
+                            self.disable_echo()
+                                .await
+                                .expect("Error disabling echo mode");
+                            info!("Echo disabled");
+                            self.enable_mux().await.expect("Error enabling mux");
+                            info!("Mux enabled");
+                            self.set_recv_mode()
+                                .await
+                                .expect("Error setting receive mode");
+                            info!("Recv mode configured");
+                            self.set_mode().await.expect("Error setting station mode");
+                            info!("adapter configured");
+                            break;
+                        }
                     }
                 }
                 Err(e) => {
-                    error!("Error initializing ESP8266 modem");
+                    error!("Error initializing ESP8266 modem: {:?}", e);
                     break;
                 }
             }
         }
     }
 
-    async fn disable_echo(&mut self) -> Result<(), AdapterError> {
+    async fn disable_echo(&mut self) -> Result<(), DriverError> {
         info!("Disabling echo");
         uart_write(&mut self.uart, b"ATE0\r\n")
             .await
-            .map_err(|_| AdapterError::UnableToInitialize)?;
+            .map_err(|_| DriverError::UnableToInitialize)?;
         info!("Command sent");
         Ok(self
             .wait_for_ok()
             .await
-            .map_err(|_| AdapterError::UnableToInitialize)?)
+            .map_err(|_| DriverError::UnableToInitialize)?)
     }
 
-    async fn enable_mux(&mut self) -> Result<(), AdapterError> {
+    async fn enable_mux(&mut self) -> Result<(), DriverError> {
         uart_write(&mut self.uart, b"AT+CIPMUX=1\r\n")
             .await
-            .map_err(|_| AdapterError::UnableToInitialize)?;
+            .map_err(|_| DriverError::UnableToInitialize)?;
         Ok(self
             .wait_for_ok()
             .await
-            .map_err(|_| AdapterError::UnableToInitialize)?)
+            .map_err(|_| DriverError::UnableToInitialize)?)
     }
 
-    async fn set_recv_mode(&mut self) -> Result<(), AdapterError> {
+    async fn set_recv_mode(&mut self) -> Result<(), DriverError> {
         uart_write(&mut self.uart, b"AT+CIPRECVMODE=1\r\n")
             .await
-            .map_err(|_| AdapterError::UnableToInitialize)?;
+            .map_err(|_| DriverError::UnableToInitialize)?;
         Ok(self
             .wait_for_ok()
             .await
-            .map_err(|_| AdapterError::UnableToInitialize)?)
+            .map_err(|_| DriverError::UnableToInitialize)?)
     }
 
-    async fn set_mode(&mut self) -> Result<(), AdapterError> {
+    async fn set_mode(&mut self) -> Result<(), DriverError> {
         uart_write(&mut self.uart, b"AT+CWMODE_CUR=1\r\n")
             .await
-            .map_err(|_| AdapterError::UnableToInitialize)?;
+            .map_err(|_| DriverError::UnableToInitialize)?;
         Ok(self
             .wait_for_ok()
             .await
-            .map_err(|_| AdapterError::UnableToInitialize)?)
+            .map_err(|_| DriverError::UnableToInitialize)?)
     }
 
-    async fn wait_for_ok(&mut self) -> Result<(), AdapterError> {
+    async fn wait_for_ok(&mut self) -> Result<(), DriverError> {
         let mut buf: [u8; 64] = [0; 64];
         let mut pos = 0;
 
         loop {
             uart_read(&mut self.uart, &mut buf[pos..pos + 1])
                 .await
-                .map_err(|_| AdapterError::ReadError)?;
+                .map_err(|_| DriverError::ReadError)?;
             pos += 1;
             if buf[0..pos].ends_with(b"OK\r\n") {
                 return Ok(());
             } else if buf[0..pos].ends_with(b"ERROR\r\n") {
-                return Err(AdapterError::UnableToInitialize);
+                return Err(DriverError::UnableToInitialize);
             }
         }
     }
 
     /// Run the processing loop until an error is encountered
     pub async fn run(&mut self) -> ! {
-        // Result<(), AdapterError> where Self: 'a {
+        // Result<(), DriverError> where Self: 'a {
         self.initialize().await;
         loop {
             let mut buf = [0; 1];
@@ -248,7 +256,9 @@ where
             };
             // We got command to write, write it
             if let Some(s) = cmd {
-                uart_write(&mut self.uart, s.as_bytes()).await;
+                if let Err(e) = uart_write(&mut self.uart, s.as_bytes()).await {
+                    error!("Error writing command to uart: {:?}", e);
+                }
             }
 
             // We got input, digest it
@@ -258,7 +268,9 @@ where
                         for b in &buf[..len] {
                             self.parse_buffer.write(*b).unwrap();
                         }
-                        self.digest().await;
+                        if let Err(e) = self.digest().await {
+                            error!("Error digesting modem input: {:?}", e);
+                        }
                     }
                     Err(e) => {
                         error!("Error reading from uart: {:?}", e);
@@ -268,7 +280,7 @@ where
         }
     }
 
-    async fn digest(&mut self) -> Result<(), AdapterError> {
+    async fn digest(&mut self) -> Result<(), DriverError> {
         let result = self.parse_buffer.parse();
 
         if let Ok(response) = result {
@@ -326,18 +338,19 @@ impl<'a> Esp8266Controller<'a> {
         }
     }
 
-    async fn send<'c>(&self, command: Command<'c>) -> Result<AtResponse, AdapterError> {
+    async fn send<'c>(&self, command: Command<'c>) -> Result<AtResponse, DriverError> {
         let mut bytes = command.as_bytes();
         trace!(
             "writing command {}",
             core::str::from_utf8(bytes.as_bytes()).unwrap()
         );
 
-        bytes.push_str("\r\n");
+        bytes.push_str("\r\n").unwrap();
         self.command_producer.send(bytes).await;
         Ok(self.response_consumer.receive().await)
     }
 
+    /*
     async fn set_wifi_mode(&self, mode: WiFiMode) -> Result<(), ()> {
         let command = Command::SetMode(mode);
         match self.send(command).await {
@@ -345,6 +358,7 @@ impl<'a> Esp8266Controller<'a> {
             _ => Err(()),
         }
     }
+    */
 
     async fn join_wep(&self, ssid: &str, password: &str) -> Result<IpAddress, JoinError> {
         let command = Command::JoinAp { ssid, password };
@@ -413,7 +427,7 @@ impl<'a> TcpStack for Esp8266Controller<'a> {
     fn connect<'m>(
         &'m mut self,
         handle: Self::SocketHandle,
-        proto: IpProtocol,
+        _: IpProtocol,
         dst: SocketAddress,
     ) -> Self::ConnectFuture<'m> {
         async move {
@@ -560,6 +574,7 @@ where
     uart.write_all(buf).await
 }
 
+/// Convenience actor implementation of modem
 pub struct Esp8266ModemActor<'a, UART, ENABLE, RESET>
 where
     UART: AsyncBufRead + AsyncBufReadExt + AsyncWrite + AsyncWriteExt + 'static,
