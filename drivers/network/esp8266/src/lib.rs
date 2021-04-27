@@ -15,12 +15,8 @@ use crate::fmt::*;
 use socket_pool::SocketPool;
 
 use buffer::Buffer;
-use core::{
-    cell::{RefCell, UnsafeCell},
-    future::Future,
-    pin::Pin,
-};
-use drogue_device_kernel::channel::*;
+use core::{future::Future, pin::Pin};
+use drogue_device_kernel::{actor::Actor, channel::*};
 use drogue_network::{
     ip::{IpAddress, IpProtocol, SocketAddress},
     tcp::{TcpError, TcpStack},
@@ -562,4 +558,64 @@ where
 {
     let mut uart = unsafe { Pin::new_unchecked(uart) };
     uart.write_all(buf).await
+}
+
+pub struct Esp8266ModemActor<'a, UART, ENABLE, RESET>
+where
+    UART: AsyncBufRead + AsyncBufReadExt + AsyncWrite + AsyncWriteExt + 'static,
+    ENABLE: OutputPin + 'static,
+    RESET: OutputPin + 'static,
+{
+    modem: Option<Esp8266Modem<'a, UART, ENABLE, RESET>>,
+}
+
+impl<'a, UART, ENABLE, RESET> Esp8266ModemActor<'a, UART, ENABLE, RESET>
+where
+    UART: AsyncBufRead + AsyncBufReadExt + AsyncWrite + AsyncWriteExt + 'static,
+    ENABLE: OutputPin + 'static,
+    RESET: OutputPin + 'static,
+{
+    pub fn new() -> Self {
+        Self { modem: None }
+    }
+}
+
+impl<'a, UART, ENABLE, RESET> Unpin for Esp8266ModemActor<'a, UART, ENABLE, RESET>
+where
+    UART: AsyncBufRead + AsyncBufReadExt + AsyncWrite + AsyncWriteExt + 'static,
+    ENABLE: OutputPin + 'static,
+    RESET: OutputPin + 'static,
+{
+}
+
+impl<'a, UART, ENABLE, RESET> Actor for Esp8266ModemActor<'a, UART, ENABLE, RESET>
+where
+    UART: AsyncBufRead + AsyncBufReadExt + AsyncWrite + AsyncWriteExt + 'static,
+    ENABLE: OutputPin + 'static,
+    RESET: OutputPin + 'static,
+{
+    type Configuration = Esp8266Modem<'a, UART, ENABLE, RESET>;
+    #[rustfmt::skip]
+    type Message<'m> where 'a: 'm = ();
+
+    fn on_mount(&mut self, config: Self::Configuration) {
+        self.modem.replace(config);
+    }
+
+    #[rustfmt::skip]
+    type OnStartFuture<'m> where 'a: 'm = impl Future<Output = ()> + 'm;
+    fn on_start(mut self: Pin<&'_ mut Self>) -> Self::OnStartFuture<'_> {
+        async move {
+            self.modem.as_mut().unwrap().run().await;
+        }
+    }
+
+    #[rustfmt::skip]
+    type OnMessageFuture<'m> where 'a: 'm = impl Future<Output = ()> + 'm;
+    fn on_message<'m>(
+        self: Pin<&'m mut Self>,
+        _: &'m mut Self::Message<'m>,
+    ) -> Self::OnMessageFuture<'m> {
+        async move {}
+    }
 }
