@@ -45,7 +45,7 @@ impl<T, N: ArrayLength<T>> ChannelInner<T, N> {
         self.receiver_waker.wake();
     }
 
-    fn split<'a>(&'a self) -> (ChannelSender<'a, T, N>, ChannelReceiver<'a, T, N>) {
+    fn split(&mut self) -> (ChannelSender<'_, T, N>, ChannelReceiver<'_, T, N>) {
         let (sender, receiver) = unsafe { (&mut *self.queue.get()).split() };
         (
             ChannelSender::new(sender, self),
@@ -70,7 +70,7 @@ impl<T, N: ArrayLength<T>> Channel<T, N> {
         Self { inner }
     }
 
-    pub fn split<'a>(&'a self) -> (ChannelSender<'a, T, N>, ChannelReceiver<'a, T, N>) {
+    pub fn split(&mut self) -> (ChannelSender<'_, T, N>, ChannelReceiver<'_, T, N>) {
         self.inner.split()
     }
 }
@@ -101,10 +101,7 @@ impl<'a, T, N: 'a + ArrayLength<T>> ChannelSender<'a, T, N> {
         }
     }
 
-    pub fn send<'m>(&'m self, value: T) -> ChannelSend<'m, T, N>
-    where
-        'm: 'a,
-    {
+    pub fn send<'m>(&'m self, value: T) -> ChannelSend<'m, 'a, T, N> {
         ChannelSend {
             sender: &self,
             element: Some(value),
@@ -112,14 +109,14 @@ impl<'a, T, N: 'a + ArrayLength<T>> ChannelSender<'a, T, N> {
     }
 }
 
-pub struct ChannelSend<'a, T, N: ArrayLength<T>> {
-    sender: &'a ChannelSender<'a, T, N>,
+pub struct ChannelSend<'m, 'a, T, N: 'a + ArrayLength<T>> {
+    sender: &'m ChannelSender<'a, T, N>,
     element: Option<T>,
 }
 
-impl<'a, T, N: ArrayLength<T>> Unpin for ChannelSend<'a, T, N> {}
+impl<'m, 'a, T, N: ArrayLength<T>> Unpin for ChannelSend<'m, 'a, T, N> {}
 
-impl<'a, T, N: ArrayLength<T>> Future for ChannelSend<'a, T, N> {
+impl<'m, 'a, T, N: ArrayLength<T>> Future for ChannelSend<'m, 'a, T, N> {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -159,25 +156,19 @@ impl<'a, T, N: 'a + ArrayLength<T>> ChannelReceiver<'a, T, N> {
         }
     }
 
-    pub fn receive<'m>(&'m self) -> ChannelReceive<'m, T, N>
-    where
-        'm: 'a,
-    {
+    pub fn receive<'m>(&'m self) -> ChannelReceive<'m, 'a, T, N> {
         ChannelReceive { receiver: &self }
     }
-    pub fn try_receive<'m>(&'m self) -> ChannelTryReceive<'m, T, N>
-    where
-        'm: 'a,
-    {
+    pub fn try_receive<'m>(&'m self) -> ChannelTryReceive<'m, 'a, T, N> {
         ChannelTryReceive { receiver: &self }
     }
 }
 
-pub struct ChannelReceive<'a, T, N: ArrayLength<T>> {
-    receiver: &'a ChannelReceiver<'a, T, N>,
+pub struct ChannelReceive<'m, 'a, T, N: ArrayLength<T>> {
+    receiver: &'m ChannelReceiver<'a, T, N>,
 }
 
-impl<'a, T, N: ArrayLength<T>> Future for ChannelReceive<'a, T, N> {
+impl<'m, 'a, T, N: ArrayLength<T>> Future for ChannelReceive<'m, 'a, T, N> {
     type Output = T;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -185,11 +176,11 @@ impl<'a, T, N: ArrayLength<T>> Future for ChannelReceive<'a, T, N> {
     }
 }
 
-pub struct ChannelTryReceive<'a, T, N: ArrayLength<T>> {
-    receiver: &'a ChannelReceiver<'a, T, N>,
+pub struct ChannelTryReceive<'m, 'a, T, N: ArrayLength<T>> {
+    receiver: &'m ChannelReceiver<'a, T, N>,
 }
 
-impl<'a, T, N: ArrayLength<T>> Future for ChannelTryReceive<'a, T, N> {
+impl<'m, 'a, T, N: ArrayLength<T>> Future for ChannelTryReceive<'m, 'a, T, N> {
     type Output = Option<T>;
 
     fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {

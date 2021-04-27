@@ -110,7 +110,7 @@ impl<'a, A: Actor> Clone for Address<'a, A> {
 
 pub struct ActorContext<'a, A: Actor> {
     pub actor: UnsafeCell<A>,
-    pub channel: Channel<ActorMessage<'a, A>, A::MaxQueueSize<'a>>,
+    channel: UnsafeCell<Channel<ActorMessage<'a, A>, A::MaxQueueSize<'a>>>,
     channel_sender: UnsafeCell<Option<ChannelSender<'a, ActorMessage<'a, A>, A::MaxQueueSize<'a>>>>,
     channel_receiver:
         UnsafeCell<Option<ChannelReceiver<'a, ActorMessage<'a, A>, A::MaxQueueSize<'a>>>>,
@@ -119,10 +119,9 @@ pub struct ActorContext<'a, A: Actor> {
 
 impl<'a, A: Actor> ActorContext<'a, A> {
     pub fn new(actor: A) -> Self {
-        let channel: Channel<ActorMessage<A>, A::MaxQueueSize<'a>> = Channel::new();
         Self {
             actor: UnsafeCell::new(actor),
-            channel,
+            channel: UnsafeCell::new(Channel::new()),
             channel_sender: UnsafeCell::new(None),
             channel_receiver: UnsafeCell::new(None),
             signals: UnsafeCell::new(Default::default()),
@@ -207,7 +206,7 @@ impl<'a, A: Actor> ActorContext<'a, A> {
     /// Mount the underloying actor and initialize the channel.
     pub fn mount(&'a self, config: A::Configuration) -> Address<'a, A> {
         unsafe { &mut *self.actor.get() }.on_mount(config);
-        let (sender, receiver) = self.channel.split();
+        let (sender, receiver) = unsafe { &mut *self.channel.get() }.split();
         unsafe { &mut *self.channel_sender.get() }.replace(sender);
         unsafe { &mut *self.channel_receiver.get() }.replace(receiver);
         Address::new(self)
@@ -222,7 +221,7 @@ enum SendState {
 }
 
 pub struct SendFuture<'a, 'm, A: Actor + 'a> {
-    channel: ChannelSend<'a, ActorMessage<'a, A>, A::MaxQueueSize<'a>>,
+    channel: ChannelSend<'m, 'a, ActorMessage<'a, A>, A::MaxQueueSize<'a>>,
     signal: Option<SignalFuture<'a, 'm>>,
     state: SendState,
     bomb: Option<DropBomb>,
@@ -230,7 +229,7 @@ pub struct SendFuture<'a, 'm, A: Actor + 'a> {
 
 impl<'a, 'm, A: Actor> SendFuture<'a, 'm, A> {
     pub fn new(
-        channel: ChannelSend<'a, ActorMessage<'a, A>, A::MaxQueueSize<'a>>,
+        channel: ChannelSend<'m, 'a, ActorMessage<'a, A>, A::MaxQueueSize<'a>>,
         signal: Option<SignalFuture<'a, 'm>>,
     ) -> Self {
         Self {

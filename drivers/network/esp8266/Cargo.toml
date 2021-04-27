@@ -22,15 +22,14 @@ embassy = {git = "https://github.com/drogue-iot/embassy.git", branch = "drogue",
 
 heapless = "0.5"
 moveslice = "2.0"
-futures = { version = "0.3" }
+futures = { version = "0.3", default-features = false }
 nom = { version = "6.1.2", default-features = false }
 embedded-hal = { version = "0.2.4", features = ["unproven"] }
-log = { version = "0.4" }
+log = { version = "0.4", optional = true }
 defmt = { version = "0.2", optional = true }
 
 [features]
-
-defmt-default = [ ]
+defmt-default = []
 defmt-trace = [ ]
 defmt-debug = [ ]
 defmt-info = [ ]

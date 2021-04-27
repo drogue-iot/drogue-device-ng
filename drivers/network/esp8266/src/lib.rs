@@ -3,26 +3,34 @@
 #![feature(min_type_alias_impl_trait)]
 #![feature(generic_associated_types)]
 
+pub(crate) mod fmt;
+
 mod buffer;
 mod num;
 mod parser;
 mod protocol;
 mod socket_pool;
 
+use crate::fmt::*;
 use socket_pool::SocketPool;
 
-use core::future::Future;
+use buffer::Buffer;
+use core::{
+    cell::{RefCell, UnsafeCell},
+    future::Future,
+    pin::Pin,
+};
 use drogue_device_kernel::channel::*;
 use drogue_network::{
     ip::{IpAddress, IpProtocol, SocketAddress},
     tcp::{TcpError, TcpStack},
     wifi::{Join, JoinError, WifiSupplicant},
 };
-use embassy::traits::uart::{Read, Write};
-use futures::future::{select, Either};
-//use crate::driver::queue::spsc_queue::*;
-use buffer::Buffer;
+use embassy::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 use embedded_hal::digital::v2::OutputPin;
+use futures::future::{select, Either};
+use futures::pin_mut;
+use heapless::{String, Vec};
 use protocol::{Command, ConnectionType, Response as AtResponse, WiFiMode};
 
 pub const BUFFER_LEN: usize = 512;
@@ -40,104 +48,81 @@ pub enum AdapterError {
     OperationNotSupported,
 }
 
-pub struct Esp8266WifiController<'a, UART, ENABLE, RESET>
-where
-    UART: Read + Write + 'static,
-    ENABLE: OutputPin + 'static,
-    RESET: OutputPin + 'static,
-{
+pub struct Esp8266Controller<'a> {
     socket_pool: SocketPool,
-    command_producer: ChannelSender<'a, Command, consts::U2>,
+    command_producer: ChannelSender<'a, String<consts::U128>, consts::U2>,
     response_consumer: ChannelReceiver<'a, AtResponse, consts::U2>,
     notification_consumer: ChannelReceiver<'a, AtResponse, consts::U2>,
 }
 
 pub struct Esp8266Modem<'a, UART, ENABLE, RESET>
 where
-    UART: Read + Write + 'static,
+    UART: AsyncBufRead + AsyncBufReadExt + AsyncWrite + AsyncWriteExt + 'static,
     ENABLE: OutputPin + 'static,
     RESET: OutputPin + 'static,
 {
     uart: UART,
+    enable: ENABLE,
+    reset: RESET,
     parse_buffer: Buffer,
-    command_consumer: ChannelReceiver<'a, Command, consts::U2>,
+    command_consumer: ChannelReceiver<'a, String<consts::U128>, consts::U2>,
     response_producer: ChannelSender<'a, AtResponse, consts::U2>,
     notification_producer: ChannelSender<'a, AtResponse, consts::U2>,
 }
 
-pub struct Esp8266Wifi<'a, UART, ENABLE, RESET>
+pub struct Esp8266Driver<UART, ENABLE, RESET>
 where
-    UART: Read + Write + 'static,
+    UART: AsyncBufRead + AsyncBufReadExt + AsyncWrite + AsyncWriteExt + 'static,
     ENABLE: OutputPin + 'static,
     RESET: OutputPin + 'static,
 {
-    enable: ENABLE,
-    reset: RESET,
-    command_channel: Channel<Command, consts::U2>,
+    enable: Option<ENABLE>,
+    reset: Option<RESET>,
+    uart: Option<UART>,
+    command_channel: Channel<String<consts::U128>, consts::U2>,
     response_channel: Channel<AtResponse, consts::U2>,
     notification_channel: Channel<AtResponse, consts::U2>,
 }
 
-impl<'a, UART, ENABLE, RESET> Esp8266Wifi<'a, UART, ENABLE, RESET>
+impl<UART, ENABLE, RESET> Esp8266Driver<UART, ENABLE, RESET>
 where
-    UART: Read + Write + 'static,
+    UART: AsyncBufRead + AsyncBufReadExt + AsyncWrite + AsyncWriteExt + 'static,
     ENABLE: OutputPin + 'static,
     RESET: OutputPin + 'static,
 {
     pub fn new(uart: UART, enable: ENABLE, reset: RESET) -> Self {
         Self {
-            uart,
-            socket_pool: SocketPool::new(),
-            parse_buffer: Buffer::new(),
-            response_queue: Channel::new(),
-            notification_queue: Channel::new(),
-            enable,
-            reset,
+            uart: Some(uart),
+            command_channel: Channel::new(),
+            response_channel: Channel::new(),
+            notification_channel: Channel::new(),
+            enable: Some(enable),
+            reset: Some(reset),
         }
     }
 
-    async fn digest(&'a mut self) -> Result<(), AdapterError> {
-        let result = self.parse_buffer.parse();
+    pub fn initialize<'a>(
+        &'a mut self,
+    ) -> (Esp8266Controller<'a>, Esp8266Modem<'a, UART, ENABLE, RESET>) {
+        let (cp, cc) = self.command_channel.split();
+        let (rp, rc) = self.response_channel.split();
+        let (np, nc) = self.notification_channel.split();
 
-        if let Ok(response) = result {
-            if !matches!(response, AtResponse::None) {
-                log::trace!("--> {:?}", response);
-            }
-            match response {
-                AtResponse::None => {}
-                AtResponse::Ok
-                | AtResponse::Error
-                | AtResponse::FirmwareInfo(..)
-                | AtResponse::Connect(..)
-                | AtResponse::ReadyForData
-                | AtResponse::ReceivedDataToSend(..)
-                | AtResponse::DataReceived(..)
-                | AtResponse::SendOk
-                | AtResponse::SendFail
-                | AtResponse::WifiConnectionFailure(..)
-                | AtResponse::IpAddress(..)
-                | AtResponse::Resolvers(..)
-                | AtResponse::DnsFail
-                | AtResponse::UnlinkFail
-                | AtResponse::IpAddresses(..) => {
-                    self.response_producer.send(response).await;
-                }
-                AtResponse::Closed(..) | AtResponse::DataAvailable { .. } => {
-                    self.notification_producer.send(response).await;
-                }
-                AtResponse::WifiConnected => {
-                    log::info!("wifi connected");
-                }
-                AtResponse::WifiDisconnect => {
-                    log::info!("wifi disconnect");
-                }
-                AtResponse::GotIp => {
-                    log::info!("wifi got ip");
-                }
-            }
-        }
-        Ok(())
+        let mut modem = Esp8266Modem::new(
+            self.uart.take().unwrap(),
+            self.enable.take().unwrap(),
+            self.reset.take().unwrap(),
+            cc,
+            rp,
+            np,
+        );
+        let controller = Esp8266Controller::new(cp, rc, nc);
+
+        (controller, modem)
     }
+
+    /*
+
 
     // Await input from uart and attempt to digest input
     pub async fn run(&'a mut self) -> Result<(), AdapterError> {
@@ -160,127 +145,27 @@ where
 
     /*
     async fn start(mut self) -> Self {
-        log::info!("Starting ESP8266 Modem");
+        info!("Starting ESP8266 Modem");
         loop {
             if let Err(e) = self.process().await {
-                log::error!("Error reading data: {:?}", e);
+                error!("Error reading data: {:?}", e);
             }
 
             if let Err(e) = self.digest().await {
-                log::error!("Error digesting data");
+                error!("Error digesting data");
             }
         }
     }
     */
 
-    async fn initialize(&mut self) {
-        let mut buffer: [u8; 1024] = [0; 1024];
-        let mut pos = 0;
 
-        const READY: [u8; 7] = *b"ready\r\n";
 
-        self.enable.set_high().ok().unwrap();
-        self.reset.set_high().ok().unwrap();
 
-        log::info!("waiting for adapter to become ready");
 
-        let mut rx_buf = [0; 1];
-        loop {
-            let result = self.uart.read(&mut rx_buf[..]).await;
-            match result {
-                Ok(c) => {
-                    buffer[pos] = rx_buf[0];
-                    pos += 1;
-                    if pos >= READY.len() && buffer[pos - READY.len()..pos] == READY {
-                        log::info!("adapter is ready");
-                        self.disable_echo()
-                            .await
-                            .expect("Error disabling echo mode");
-                        log::info!("Echo disabled");
-                        self.enable_mux().await.expect("Error enabling mux");
-                        log::info!("Mux enabled");
-                        self.set_recv_mode()
-                            .await
-                            .expect("Error setting receive mode");
-                        log::info!("Recv mode configured");
-                        self.set_mode().await.expect("Error setting station mode");
-                        log::info!("adapter configured");
-                        break;
-                    }
-                }
-                Err(e) => {
-                    log::error!("Error initializing ESP8266 modem");
-                    break;
-                }
-            }
-        }
-    }
-
-    async fn set_mode(&mut self) -> Result<(), AdapterError> {
-        self.uart
-            .write(b"AT+CWMODE_CUR=1\r\n")
-            .await
-            .map_err(|_| AdapterError::UnableToInitialize)?;
-        Ok(self
-            .wait_for_ok()
-            .await
-            .map_err(|_| AdapterError::UnableToInitialize)?)
-    }
-
-    async fn disable_echo(&mut self) -> Result<(), AdapterError> {
-        self.uart
-            .write(b"ATE0\r\n")
-            .await
-            .map_err(|_| AdapterError::UnableToInitialize)?;
-        Ok(self
-            .wait_for_ok()
-            .await
-            .map_err(|_| AdapterError::UnableToInitialize)?)
-    }
-
-    async fn enable_mux(&mut self) -> Result<(), AdapterError> {
-        self.uart
-            .write(b"AT+CIPMUX=1\r\n")
-            .await
-            .map_err(|_| AdapterError::UnableToInitialize)?;
-        Ok(self
-            .wait_for_ok()
-            .await
-            .map_err(|_| AdapterError::UnableToInitialize)?)
-    }
-
-    async fn set_recv_mode(&mut self) -> Result<(), AdapterError> {
-        self.uart
-            .write(b"AT+CIPRECVMODE=1\r\n")
-            .await
-            .map_err(|_| AdapterError::UnableToInitialize)?;
-        Ok(self
-            .wait_for_ok()
-            .await
-            .map_err(|_| AdapterError::UnableToInitialize)?)
-    }
-
-    async fn wait_for_ok(&mut self) -> Result<(), AdapterError> {
-        let mut buf: [u8; 64] = [0; 64];
-        let mut pos = 0;
-
-        loop {
-            self.uart
-                .read(&mut buf[pos..pos + 1])
-                .await
-                .map_err(|_| AdapterError::ReadError)?;
-            pos += 1;
-            if buf[0..pos].ends_with(b"OK\r\n") {
-                return Ok(());
-            } else if buf[0..pos].ends_with(b"ERROR\r\n") {
-                return Err(AdapterError::UnableToInitialize);
-            }
-        }
-    }
 
     async fn send<'c>(&mut self, command: Command<'c>) -> Result<AtResponse, AdapterError> {
         let bytes = command.as_bytes();
-        log::trace!(
+        trace!(
             "writing command {}",
             core::str::from_utf8(bytes.as_bytes()).unwrap()
         );
@@ -346,7 +231,9 @@ where
             }
         }
     }
+    */
 }
+/*
 
 impl<'a, UART, ENABLE, RESET> WifiSupplicant for Esp8266Wifi<'a, UART, ENABLE, RESET>
 where
@@ -367,17 +254,310 @@ where
     }
 }
 
-impl<'a, UART, ENABLE, RESET> TcpStack for Esp8266Wifi<'a, UART, ENABLE, RESET>
+*/
+
+impl<'a, UART, ENABLE, RESET> Esp8266Modem<'a, UART, ENABLE, RESET>
 where
-    UART: Read + Write + 'static,
+    UART: AsyncBufRead + AsyncBufReadExt + AsyncWrite + AsyncWriteExt + 'static,
     ENABLE: OutputPin + 'static,
     RESET: OutputPin + 'static,
 {
+    pub fn new(
+        uart: UART,
+        enable: ENABLE,
+        reset: RESET,
+        command_consumer: ChannelReceiver<'a, String<consts::U128>, consts::U2>,
+        response_producer: ChannelSender<'a, AtResponse, consts::U2>,
+        notification_producer: ChannelSender<'a, AtResponse, consts::U2>,
+    ) -> Self {
+        Self {
+            uart,
+            enable,
+            reset,
+            parse_buffer: Buffer::new(),
+            command_consumer,
+            response_producer,
+            notification_producer,
+        }
+    }
+
+    async fn initialize(&mut self) {
+        let mut buffer: [u8; 1024] = [0; 1024];
+        let mut pos = 0;
+
+        const READY: [u8; 7] = *b"ready\r\n";
+
+        info!("waiting for adapter to become ready");
+
+        self.enable.set_high().ok().unwrap();
+        self.reset.set_high().ok().unwrap();
+
+        let mut rx_buf = [0; 1];
+        loop {
+            let result = uart_read(&mut self.uart, &mut rx_buf[..]).await;
+            match result {
+                Ok(c) => {
+                    buffer[pos] = rx_buf[0];
+                    pos += 1;
+                    if pos >= READY.len() && buffer[pos - READY.len()..pos] == READY {
+                        info!("adapter is ready");
+                        self.disable_echo()
+                            .await
+                            .expect("Error disabling echo mode");
+                        info!("Echo disabled");
+                        self.enable_mux().await.expect("Error enabling mux");
+                        info!("Mux enabled");
+                        self.set_recv_mode()
+                            .await
+                            .expect("Error setting receive mode");
+                        info!("Recv mode configured");
+                        self.set_mode().await.expect("Error setting station mode");
+                        info!("adapter configured");
+                        break;
+                    }
+                }
+                Err(e) => {
+                    error!("Error initializing ESP8266 modem");
+                    break;
+                }
+            }
+        }
+    }
+
+    async fn disable_echo(&mut self) -> Result<(), AdapterError> {
+        info!("Disabling echo");
+        uart_write(&mut self.uart, b"ATE0\r\n")
+            .await
+            .map_err(|_| AdapterError::UnableToInitialize)?;
+        info!("Command sent");
+        Ok(self
+            .wait_for_ok()
+            .await
+            .map_err(|_| AdapterError::UnableToInitialize)?)
+    }
+
+    async fn enable_mux(&mut self) -> Result<(), AdapterError> {
+        uart_write(&mut self.uart, b"AT+CIPMUX=1\r\n")
+            .await
+            .map_err(|_| AdapterError::UnableToInitialize)?;
+        Ok(self
+            .wait_for_ok()
+            .await
+            .map_err(|_| AdapterError::UnableToInitialize)?)
+    }
+
+    async fn set_recv_mode(&mut self) -> Result<(), AdapterError> {
+        uart_write(&mut self.uart, b"AT+CIPRECVMODE=1\r\n")
+            .await
+            .map_err(|_| AdapterError::UnableToInitialize)?;
+        Ok(self
+            .wait_for_ok()
+            .await
+            .map_err(|_| AdapterError::UnableToInitialize)?)
+    }
+
+    async fn set_mode(&mut self) -> Result<(), AdapterError> {
+        uart_write(&mut self.uart, b"AT+CWMODE_CUR=1\r\n")
+            .await
+            .map_err(|_| AdapterError::UnableToInitialize)?;
+        Ok(self
+            .wait_for_ok()
+            .await
+            .map_err(|_| AdapterError::UnableToInitialize)?)
+    }
+
+    async fn wait_for_ok(&mut self) -> Result<(), AdapterError> {
+        let mut buf: [u8; 64] = [0; 64];
+        let mut pos = 0;
+
+        loop {
+            uart_read(&mut self.uart, &mut buf[pos..pos + 1])
+                .await
+                .map_err(|_| AdapterError::ReadError)?;
+            pos += 1;
+            if buf[0..pos].ends_with(b"OK\r\n") {
+                return Ok(());
+            } else if buf[0..pos].ends_with(b"ERROR\r\n") {
+                return Err(AdapterError::UnableToInitialize);
+            }
+        }
+    }
+
+    /// Run the processing loop until an error is encountered
+    pub async fn run(&mut self) -> ! {
+        // Result<(), AdapterError> where Self: 'a {
+        self.initialize().await;
+        loop {
+            let mut buf = [0; 1];
+            let (cmd, input) = {
+                let command_fut = self.command_consumer.receive();
+                let uart_fut = uart_read(&mut self.uart, &mut buf[..]);
+                pin_mut!(uart_fut);
+
+                match select(command_fut, uart_fut).await {
+                    Either::Left((s, _)) => (Some(s), None),
+                    Either::Right((r, _)) => (None, Some(r)),
+                }
+            };
+            // We got command to write, write it
+            if let Some(s) = cmd {
+                uart_write(&mut self.uart, s.as_bytes()).await;
+            }
+
+            // We got input, digest it
+            if let Some(input) = input {
+                match input {
+                    Ok(len) => {
+                        for b in &buf[..len] {
+                            self.parse_buffer.write(*b).unwrap();
+                        }
+                        self.digest().await;
+                    }
+                    Err(e) => {
+                        error!("Error reading from uart: {:?}", e);
+                    }
+                }
+            }
+        }
+    }
+
+    async fn digest(&mut self) -> Result<(), AdapterError> {
+        let result = self.parse_buffer.parse();
+
+        if let Ok(response) = result {
+            if !matches!(response, AtResponse::None) {
+                //trace!("--> {:?}", response);
+            }
+            match response {
+                AtResponse::None => {}
+                AtResponse::Ok
+                | AtResponse::Error
+                | AtResponse::FirmwareInfo(..)
+                | AtResponse::Connect(..)
+                | AtResponse::ReadyForData
+                | AtResponse::ReceivedDataToSend(..)
+                | AtResponse::DataReceived(..)
+                | AtResponse::SendOk
+                | AtResponse::SendFail
+                | AtResponse::WifiConnectionFailure(..)
+                | AtResponse::IpAddress(..)
+                | AtResponse::Resolvers(..)
+                | AtResponse::DnsFail
+                | AtResponse::UnlinkFail
+                | AtResponse::IpAddresses(..) => {
+                    self.response_producer.send(response).await;
+                }
+                AtResponse::Closed(..) | AtResponse::DataAvailable { .. } => {
+                    self.notification_producer.send(response).await;
+                }
+                AtResponse::WifiConnected => {
+                    info!("wifi connected");
+                }
+                AtResponse::WifiDisconnect => {
+                    info!("wifi disconnect");
+                }
+                AtResponse::GotIp => {
+                    info!("wifi got ip");
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<'a> Esp8266Controller<'a> {
+    pub fn new(
+        command_producer: ChannelSender<'a, String<consts::U128>, consts::U2>,
+        response_consumer: ChannelReceiver<'a, AtResponse, consts::U2>,
+        notification_consumer: ChannelReceiver<'a, AtResponse, consts::U2>,
+    ) -> Self {
+        Self {
+            socket_pool: SocketPool::new(),
+            command_producer,
+            response_consumer,
+            notification_consumer,
+        }
+    }
+
+    async fn send<'c>(&self, command: Command<'c>) -> Result<AtResponse, AdapterError> {
+        let mut bytes = command.as_bytes();
+        trace!(
+            "writing command {}",
+            core::str::from_utf8(bytes.as_bytes()).unwrap()
+        );
+
+        bytes.push_str("\r\n");
+        self.command_producer.send(bytes).await;
+        Ok(self.response_consumer.receive().await)
+    }
+
+    async fn set_wifi_mode(&self, mode: WiFiMode) -> Result<(), ()> {
+        let command = Command::SetMode(mode);
+        match self.send(command).await {
+            Ok(AtResponse::Ok) => Ok(()),
+            _ => Err(()),
+        }
+    }
+
+    async fn join_wep(&self, ssid: &str, password: &str) -> Result<IpAddress, JoinError> {
+        let command = Command::JoinAp { ssid, password };
+        match self.send(command).await {
+            Ok(AtResponse::Ok) => self.get_ip_address().await.map_err(|_| JoinError::Unknown),
+            Ok(AtResponse::WifiConnectionFailure(reason)) => {
+                log::warn!("Error connecting to wifi: {:?}", reason);
+                Err(JoinError::Unknown)
+            }
+            _ => Err(JoinError::UnableToAssociate),
+        }
+    }
+
+    async fn get_ip_address(&self) -> Result<IpAddress, ()> {
+        let command = Command::QueryIpAddress;
+
+        if let Ok(AtResponse::IpAddresses(addresses)) = self.send(command).await {
+            return Ok(IpAddress::V4(addresses.ip));
+        }
+
+        Err(())
+    }
+
+    async fn process_notifications(&mut self) {
+        while let Some(response) = self.notification_consumer.try_receive().await {
+            match response {
+                AtResponse::DataAvailable { link_id, len } => {
+                    //  shared.socket_pool // [link_id].available += len;
+                }
+                AtResponse::Connect(_) => {}
+                AtResponse::Closed(link_id) => {
+                    self.socket_pool.close(link_id as u8);
+                }
+                _ => { /* ignore */ }
+            }
+        }
+    }
+}
+
+impl<'a> WifiSupplicant for Esp8266Controller<'a> {
+    #[rustfmt::skip]
+    type JoinFuture<'m> where 'a: 'm = impl Future<Output = Result<IpAddress, JoinError>> + 'm;
+    fn join<'m>(&'m mut self, join_info: Join) -> Self::JoinFuture<'m> {
+        async move {
+            match join_info {
+                Join::Open => Err(JoinError::Unknown),
+                Join::Wpa { ssid, password } => {
+                    self.join_wep(ssid.as_ref(), password.as_ref()).await
+                }
+            }
+        }
+    }
+}
+
+impl<'a> TcpStack for Esp8266Controller<'a> {
     type SocketHandle = u8;
 
     #[rustfmt::skip]
     type OpenFuture<'m> where 'a: 'm = impl Future<Output = Self::SocketHandle> + 'm;
-    fn open<'m>(&'m self) -> Self::OpenFuture<'m> {
+    fn open<'m>(&'m mut self) -> Self::OpenFuture<'m> {
         async move { self.socket_pool.open().await }
     }
 
@@ -414,36 +594,33 @@ where
 
             let result = match self.send(command).await {
                 Ok(AtResponse::Ok) => {
-                    match self.wait_for_response().await {
+                    match self.response_consumer.receive().await {
                         AtResponse::ReadyForData => {
-                            if let Ok(_) = self.uart.write(buf).await {
-                                let mut data_sent: Option<usize> = None;
-                                loop {
-                                    match self.wait_for_response().await {
-                                        AtResponse::ReceivedDataToSend(len) => {
-                                            data_sent.replace(len);
-                                        }
-                                        AtResponse::SendOk => {
-                                            break Ok(data_sent.unwrap_or_default())
-                                        }
-                                        _ => {
-                                            break Err(TcpError::WriteError);
-                                            // unknown response
-                                        }
+                            self.command_producer
+                                .send(String::from_utf8(Vec::from_slice(buf).unwrap()).unwrap())
+                                .await;
+                            let mut data_sent: Option<usize> = None;
+                            loop {
+                                match self.response_consumer.receive().await {
+                                    AtResponse::ReceivedDataToSend(len) => {
+                                        data_sent.replace(len);
+                                    }
+                                    AtResponse::SendOk => break Ok(data_sent.unwrap_or_default()),
+                                    _ => {
+                                        break Err(TcpError::WriteError);
+                                        // unknown response
                                     }
                                 }
-                            } else {
-                                Err(TcpError::WriteError)
                             }
                         }
                         r => {
-                            log::info!("Unexpected response: {:?}", r);
+                            info!("Unexpected response: {:?}", r);
                             Err(TcpError::WriteError)
                         }
                     }
                 }
                 Ok(r) => {
-                    log::info!("Unexpected response: {:?}", r);
+                    info!("Unexpected response: {:?}", r);
                     Err(TcpError::WriteError)
                 }
                 Err(_) => Err(TcpError::WriteError),
@@ -464,7 +641,7 @@ where
             loop {
                 let result = async {
                     self.process_notifications().await;
-                    if self.shared.as_ref().unwrap().socket_pool.is_closed(handle) {
+                    if self.socket_pool.is_closed(handle) {
                         return Err(TcpError::SocketClosed);
                     }
 
@@ -518,4 +695,20 @@ where
             }
         }
     }
+}
+
+async fn uart_read<UART>(uart: &mut UART, rx_buf: &mut [u8]) -> Result<usize, embassy::io::Error>
+where
+    UART: AsyncBufRead + AsyncBufReadExt + 'static,
+{
+    let mut uart = unsafe { Pin::new_unchecked(uart) };
+    uart.read(rx_buf).await
+}
+
+async fn uart_write<UART>(uart: &mut UART, buf: &[u8]) -> Result<(), embassy::io::Error>
+where
+    UART: AsyncWriteExt + AsyncWrite + 'static,
+{
+    let mut uart = unsafe { Pin::new_unchecked(uart) };
+    uart.write_all(buf).await
 }
