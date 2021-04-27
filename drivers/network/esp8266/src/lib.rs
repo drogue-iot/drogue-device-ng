@@ -365,7 +365,7 @@ impl<'a> Esp8266Controller<'a> {
         match self.send(command).await {
             Ok(AtResponse::Ok) => self.get_ip_address().await.map_err(|_| JoinError::Unknown),
             Ok(AtResponse::WifiConnectionFailure(reason)) => {
-                log::warn!("Error connecting to wifi: {:?}", reason);
+                warn!("Error connecting to wifi: {:?}", reason);
                 Err(JoinError::Unknown)
             }
             _ => Err(JoinError::UnableToAssociate),
