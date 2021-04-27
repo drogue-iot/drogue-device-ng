@@ -70,191 +70,42 @@ where
     notification_producer: ChannelSender<'a, AtResponse, consts::U2>,
 }
 
-pub struct Esp8266Driver<UART, ENABLE, RESET>
-where
-    UART: AsyncBufRead + AsyncBufReadExt + AsyncWrite + AsyncWriteExt + 'static,
-    ENABLE: OutputPin + 'static,
-    RESET: OutputPin + 'static,
-{
-    enable: Option<ENABLE>,
-    reset: Option<RESET>,
-    uart: Option<UART>,
+pub struct Esp8266Driver {
     command_channel: Channel<String<consts::U128>, consts::U2>,
     response_channel: Channel<AtResponse, consts::U2>,
     notification_channel: Channel<AtResponse, consts::U2>,
 }
 
-impl<UART, ENABLE, RESET> Esp8266Driver<UART, ENABLE, RESET>
-where
-    UART: AsyncBufRead + AsyncBufReadExt + AsyncWrite + AsyncWriteExt + 'static,
-    ENABLE: OutputPin + 'static,
-    RESET: OutputPin + 'static,
-{
-    pub fn new(uart: UART, enable: ENABLE, reset: RESET) -> Self {
+impl Esp8266Driver {
+    pub fn new() -> Self {
         Self {
-            uart: Some(uart),
             command_channel: Channel::new(),
             response_channel: Channel::new(),
             notification_channel: Channel::new(),
-            enable: Some(enable),
-            reset: Some(reset),
         }
     }
 
-    pub fn initialize<'a>(
+    pub fn initialize<'a, UART, ENABLE, RESET>(
         &'a mut self,
-    ) -> (Esp8266Controller<'a>, Esp8266Modem<'a, UART, ENABLE, RESET>) {
+        uart: UART,
+        enable: ENABLE,
+        reset: RESET,
+    ) -> (Esp8266Controller<'a>, Esp8266Modem<'a, UART, ENABLE, RESET>)
+    where
+        UART: AsyncBufRead + AsyncBufReadExt + AsyncWrite + AsyncWriteExt + 'static,
+        ENABLE: OutputPin + 'static,
+        RESET: OutputPin + 'static,
+    {
         let (cp, cc) = self.command_channel.split();
         let (rp, rc) = self.response_channel.split();
         let (np, nc) = self.notification_channel.split();
 
-        let mut modem = Esp8266Modem::new(
-            self.uart.take().unwrap(),
-            self.enable.take().unwrap(),
-            self.reset.take().unwrap(),
-            cc,
-            rp,
-            np,
-        );
+        let mut modem = Esp8266Modem::new(uart, enable, reset, cc, rp, np);
         let controller = Esp8266Controller::new(cp, rc, nc);
 
         (controller, modem)
     }
-
-    /*
-
-
-    // Await input from uart and attempt to digest input
-    pub async fn run(&'a mut self) -> Result<(), AdapterError> {
-        loop {
-            let mut buf = [0; 1];
-            let command_fut = self.command_consumer.receive();
-            let uart_fut = self.uart.read(&mut buf[..]);
-
-            match select(command_fut, uart_fut).await {
-                Either::Left((r, _)) => {
-                    // Write command to uart
-                }
-                Either::Right(_) => {
-                    self.parse_buffer.write(buf[0]).unwrap();
-                    self.digest().await
-                }
-            }
-        }
-    }
-
-    /*
-    async fn start(mut self) -> Self {
-        info!("Starting ESP8266 Modem");
-        loop {
-            if let Err(e) = self.process().await {
-                error!("Error reading data: {:?}", e);
-            }
-
-            if let Err(e) = self.digest().await {
-                error!("Error digesting data");
-            }
-        }
-    }
-    */
-
-
-
-
-
-
-    async fn send<'c>(&mut self, command: Command<'c>) -> Result<AtResponse, AdapterError> {
-        let bytes = command.as_bytes();
-        trace!(
-            "writing command {}",
-            core::str::from_utf8(bytes.as_bytes()).unwrap()
-        );
-
-        self.uart
-            .write(&bytes.as_bytes())
-            .await
-            .map_err(|e| AdapterError::WriteError)?;
-
-        self.uart
-            .write(b"\r\n")
-            .await
-            .map_err(|e| AdapterError::WriteError)?;
-
-        Ok(self.wait_for_response().await)
-    }
-
-    async fn wait_for_response(&mut self) -> AtResponse {
-        self.response_queue.receive().await
-    }
-
-    async fn set_wifi_mode(&mut self, mode: WiFiMode) -> Result<(), ()> {
-        let command = Command::SetMode(mode);
-        match self.send(command).await {
-            Ok(AtResponse::Ok) => Ok(()),
-            _ => Err(()),
-        }
-    }
-
-    async fn join_wep(&mut self, ssid: &str, password: &str) -> Result<IpAddress, JoinError> {
-        let command = Command::JoinAp { ssid, password };
-        match self.send(command).await {
-            Ok(AtResponse::Ok) => self.get_ip_address().await.map_err(|_| JoinError::Unknown),
-            Ok(AtResponse::WifiConnectionFailure(reason)) => {
-                log::warn!("Error connecting to wifi: {:?}", reason);
-                Err(JoinError::Unknown)
-            }
-            _ => Err(JoinError::UnableToAssociate),
-        }
-    }
-
-    async fn get_ip_address(&mut self) -> Result<IpAddress, ()> {
-        let command = Command::QueryIpAddress;
-
-        if let Ok(AtResponse::IpAddresses(addresses)) = self.send(command).await {
-            return Ok(IpAddress::V4(addresses.ip));
-        }
-
-        Err(())
-    }
-
-    async fn process_notifications(&mut self) {
-        while let Some(response) = self.notification_queue.try_receive().await {
-            match response {
-                AtResponse::DataAvailable { link_id, len } => {
-                    //  shared.socket_pool // [link_id].available += len;
-                }
-                AtResponse::Connect(_) => {}
-                AtResponse::Closed(link_id) => {
-                    self.socket_pool.close(link_id as u8);
-                }
-                _ => { /* ignore */ }
-            }
-        }
-    }
-    */
 }
-/*
-
-impl<'a, UART, ENABLE, RESET> WifiSupplicant for Esp8266Wifi<'a, UART, ENABLE, RESET>
-where
-    UART: Read + Write + 'static,
-    ENABLE: OutputPin + 'static,
-    RESET: OutputPin + 'static,
-{
-    type JoinFuture<'m> = impl Future<Output = Result<IpAddress, JoinError>> + 'm;
-    fn join<'m>(&'m mut self, join_info: Join) -> Self::JoinFuture<'m> {
-        async move {
-            match join_info {
-                Join::Open => Err(JoinError::Unknown),
-                Join::Wpa { ssid, password } => {
-                    self.join_wep(ssid.as_ref(), password.as_ref()).await
-                }
-            }
-        }
-    }
-}
-
-*/
 
 impl<'a, UART, ENABLE, RESET> Esp8266Modem<'a, UART, ENABLE, RESET>
 where

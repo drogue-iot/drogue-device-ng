@@ -38,7 +38,7 @@ static LOGGER: RTTLogger = RTTLogger::new(LevelFilter::Info);
 
 #[derive(Device)]
 pub struct MyDevice {
-    driver: UnsafeCell<Esp8266Driver<UART, ENABLE, RESET>>,
+    driver: UnsafeCell<Esp8266Driver>,
     modem: ActorContext<'static, Esp8266ModemActor>,
     //    button: ActorContext<'static, Button<'static, PortInput<'static, P0_14>, Statistics>>,
 }
@@ -123,10 +123,9 @@ async fn main(context: DeviceContext<MyDevice>) {
 
     let enable_pin = Output::new(p.P0_03, Level::Low, OutputDrive::Standard);
     let reset_pin = Output::new(p.P0_02, Level::Low, OutputDrive::Standard);
-    let driver = Esp8266Driver::new(u, enable_pin, reset_pin);
 
     context.configure(MyDevice {
-        driver: UnsafeCell::new(driver),
+        driver: UnsafeCell::new(Esp8266Driver::new()),
         modem: ActorContext::new(Esp8266ModemActor::new()),
         //button: ActorContext::new(Button::new(button_port)),
     });
