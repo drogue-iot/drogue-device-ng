@@ -266,12 +266,11 @@ mod test {
         assert_eq!(&buf, "Connect(1)");
     }
 
-    #[test]
     fn test_debug_data() {
         let mut buf = ArrayString::<[u8; 256]>::new();
         let data = b"FOO\0BAR";
 
-        let mut array = [0u8; 128];
+        let mut array = [0u8; super::BUFFER_LEN];
         for (&x, p) in data.iter().zip(array.iter_mut()) {
             *p = x;
         }

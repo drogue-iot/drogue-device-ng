@@ -28,6 +28,9 @@ embedded-hal = { version = "0.2.4", features = ["unproven"] }
 log = { version = "0.4", optional = true }
 defmt = { version = "0.2", optional = true }
 
+[dev-dependencies]
+arrayvec = "0.5"
+
 [features]
 defmt-default = []
 defmt-trace = [ ]
