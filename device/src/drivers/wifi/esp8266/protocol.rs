@@ -1,7 +1,7 @@
-use crate::BUFFER_LEN;
+use super::BUFFER_LEN;
 use core::fmt;
 use core::fmt::{Debug, Write};
-use drogue_network::ip::{IpAddress, IpAddressV4, SocketAddress};
+use crate::traits::ip::{IpAddress, IpAddressV4, SocketAddress};
 use heapless::{consts::U256, String};
 
 #[derive(Debug)]

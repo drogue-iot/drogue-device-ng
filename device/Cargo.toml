@@ -24,7 +24,12 @@ lorawan-device = { git = "https://github.com/lulf/rust-lorawan.git", branch   = 
 lorawan-encoding = { git = "https://github.com/lulf/rust-lorawan.git", branch   = "configurable-rxdelay", default-features = false, features = ["default-crypto"], optional = true }
 bit_field = { version = "0.10", optional = true }
 
+# Wifi Dependencies
+nom = { version = "6.1.2", default-features = false, optional = true }
+moveslice = { version = "2.0", optional = true }
+
 # Utilities
+futures = { version = "0.3", default-features = false }
 heapless = "0.5"
 embedded-hal = { version = "0.2.4", features = ["unproven"] }
 atomic-polyfill = "0.1"
@@ -40,8 +45,8 @@ embassy-std = {git = "https://github.com/drogue-iot/embassy.git", branch = "drog
 std = ["embassy/std", "embassy-std"]
 "chip+nrf52833" = ["embassy-nrf", "embassy-nrf/52833"]
 "chip+stm32l0x2" = ["embassy-stm32", "embassy-stm32/stm32l0x2" ]
-"lora+sx127x" = ["lorawan-device", "lorawan-encoding", "bit_field"]
-"wifi+esp8266" = []
+"lora+sx127x" = ["lorawan-device", "lorawan-encoding", "bit_field", "log"]
+"wifi+esp8266" = ["log", "nom", "moveslice"]
 lora = []
 wifi = []
 fonts = []

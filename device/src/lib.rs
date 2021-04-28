@@ -1,6 +1,7 @@
 #![macro_use]
 #![cfg_attr(not(feature = "std"), no_std)]
 #![allow(incomplete_features)]
+#![allow(dead_code)]
 #![feature(min_type_alias_impl_trait)]
 #![feature(impl_trait_in_bindings)]
 #![feature(generic_associated_types)]
@@ -77,6 +78,8 @@
 //! }
 //!```
 //!
+
+pub(crate) mod fmt;
 
 pub mod kernel;
 pub use kernel::{

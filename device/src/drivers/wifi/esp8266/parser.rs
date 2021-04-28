@@ -10,9 +10,9 @@ use nom::take_until;
 use nom::tuple;
 use nom::IResult;
 
-use drogue_network::ip::{IpAddress, IpAddressV4};
+use crate::traits::ip::{IpAddress, IpAddressV4};
 
-use crate::{
+use super::{
     num::{atoi_u8, atoi_usize},
     protocol::{FirmwareInfo, IpAddresses, ResolverAddresses, Response, WifiConnectionFailure},
     BUFFER_LEN,

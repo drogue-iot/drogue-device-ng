@@ -1,15 +1,7 @@
-#![no_std]
-#![allow(incomplete_features)]
-#![allow(dead_code)]
-#![feature(min_type_alias_impl_trait)]
-#![feature(generic_associated_types)]
-
 //! Esp8266 Async Driver
 //!
 //! An async driver for the Esp8266 AT-command firmware. The driver implements the drogue-network APIs for
 //! WifiSupplicant and TcpStack.
-
-pub(crate) mod fmt;
 
 mod buffer;
 mod num;
