@@ -4,7 +4,7 @@ use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::{Context, Poll};
-use drogue_device_kernel::{
+use crate::kernel::{
     actor::Actor, device::Device, device::DeviceContext, util::ImmediateFuture,
 };
 use embassy::executor::{raw, Spawner};
