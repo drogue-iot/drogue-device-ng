@@ -42,6 +42,7 @@ defmt = { version = "0.2", optional = true }
 embassy-std = {git = "https://github.com/drogue-iot/embassy.git", branch = "drogue", default-features = false } #, path = "../../../embassy/embassy-std" }
 
 [features]
+default = [ "log" ]
 std = ["embassy/std", "embassy-std"]
 "chip+nrf52833" = ["embassy-nrf", "embassy-nrf/52833"]
 "chip+stm32l0x2" = ["embassy-stm32", "embassy-stm32/stm32l0x2" ]
