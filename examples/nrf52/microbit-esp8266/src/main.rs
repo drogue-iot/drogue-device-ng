@@ -99,7 +99,12 @@ async fn main(context: DeviceContext<MyDevice>) {
     context.configure(MyDevice {
         driver: UnsafeCell::new(Esp8266Driver::new()),
         modem: ActorContext::new(Esp8266ModemActor::new()),
-        app: ActorContext::new(App::new(WIFI_SSID, WIFI_PSK, HOST, PORT)),
+        app: ActorContext::new(App::new(
+            WIFI_SSID.trim_end(),
+            WIFI_PSK.trim_end(),
+            HOST,
+            PORT,
+        )),
         button: ActorContext::new(Button::new(button_port)),
     });
 

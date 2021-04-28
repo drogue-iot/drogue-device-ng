@@ -52,9 +52,14 @@ impl<D: WifiSupplicant + TcpStack> Actor for App<D> {
     #[rustfmt::skip]
     type OnMessageFuture<'m> where D: 'm = impl Future<Output = ()> + 'm;
 
+    fn on_mount(&mut self, config: Self::Configuration) {
+        self.driver.replace(config);
+    }
+
     fn on_start<'m>(mut self: Pin<&'m mut Self>) -> Self::OnStartFuture<'m> {
         async move {
             let mut driver = self.driver.take().unwrap();
+            log::info!("Joining access point");
             driver
                 .join(Join::Wpa {
                     ssid: heapless::String::from_str(self.ssid).unwrap(),
@@ -62,9 +67,11 @@ impl<D: WifiSupplicant + TcpStack> Actor for App<D> {
                 })
                 .await
                 .expect("Error joining wifi");
-            log::info!("Joined AP");
+            log::info!("Joined access point");
 
             let socket = driver.open().await;
+
+            log::info!("Connecting to {}:{}", self.ip, self.port);
             let result = driver
                 .connect(
                     socket,

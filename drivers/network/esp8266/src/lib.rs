@@ -21,14 +21,21 @@ use crate::fmt::*;
 use socket_pool::SocketPool;
 
 use buffer::Buffer;
-use core::{future::Future, pin::Pin};
+use core::{
+    future::Future,
+    pin::Pin,
+    sync::atomic::{AtomicBool, Ordering},
+};
 use drogue_device_kernel::{actor::Actor, channel::*};
 use drogue_network::{
     ip::{IpAddress, IpProtocol, SocketAddress},
     tcp::{TcpError, TcpStack},
     wifi::{Join, JoinError, WifiSupplicant},
 };
-use embassy::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
+use embassy::{
+    io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt},
+    util::Signal,
+};
 use embedded_hal::digital::v2::OutputPin;
 use futures::future::{select, Either};
 use futures::pin_mut;
@@ -37,7 +44,7 @@ use protocol::{Command, ConnectionType, Response as AtResponse};
 
 pub const BUFFER_LEN: usize = 512;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum DriverError {
     UnableToInitialize,
     NoAvailableSockets,
@@ -50,9 +57,37 @@ pub enum DriverError {
     OperationNotSupported,
 }
 
+type CommandBuffer = String<consts::U256>;
+
+pub struct Initialized {
+    signal: Signal<Result<(), DriverError>>,
+    initialized: AtomicBool,
+}
+
+impl Initialized {
+    pub fn new() -> Self {
+        Self {
+            signal: Signal::new(),
+            initialized: AtomicBool::new(false),
+        }
+    }
+
+    async fn wait(&self) -> Result<(), DriverError> {
+        if self.initialized.swap(true, Ordering::SeqCst) == false {
+            self.signal.wait().await?;
+        }
+        Ok(())
+    }
+
+    pub fn signal(&self, result: Result<(), DriverError>) {
+        self.signal.signal(result);
+    }
+}
+
 pub struct Esp8266Controller<'a> {
+    initialized: &'a Initialized,
     socket_pool: SocketPool,
-    command_producer: ChannelSender<'a, String<consts::U128>, consts::U2>,
+    command_producer: ChannelSender<'a, CommandBuffer, consts::U1>,
     response_consumer: ChannelReceiver<'a, AtResponse, consts::U2>,
     notification_consumer: ChannelReceiver<'a, AtResponse, consts::U2>,
 }
@@ -63,17 +98,19 @@ where
     ENABLE: OutputPin + 'static,
     RESET: OutputPin + 'static,
 {
+    initialized: &'a Initialized,
     uart: UART,
     enable: ENABLE,
     reset: RESET,
     parse_buffer: Buffer,
-    command_consumer: ChannelReceiver<'a, String<consts::U128>, consts::U2>,
+    command_consumer: ChannelReceiver<'a, CommandBuffer, consts::U1>,
     response_producer: ChannelSender<'a, AtResponse, consts::U2>,
     notification_producer: ChannelSender<'a, AtResponse, consts::U2>,
 }
 
 pub struct Esp8266Driver {
-    command_channel: Channel<String<consts::U128>, consts::U2>,
+    initialized: Initialized,
+    command_channel: Channel<CommandBuffer, consts::U1>,
     response_channel: Channel<AtResponse, consts::U2>,
     notification_channel: Channel<AtResponse, consts::U2>,
 }
@@ -81,6 +118,7 @@ pub struct Esp8266Driver {
 impl Esp8266Driver {
     pub fn new() -> Self {
         Self {
+            initialized: Initialized::new(),
             command_channel: Channel::new(),
             response_channel: Channel::new(),
             notification_channel: Channel::new(),
@@ -102,8 +140,8 @@ impl Esp8266Driver {
         let (rp, rc) = self.response_channel.split();
         let (np, nc) = self.notification_channel.split();
 
-        let modem = Esp8266Modem::new(uart, enable, reset, cc, rp, np);
-        let controller = Esp8266Controller::new(cp, rc, nc);
+        let modem = Esp8266Modem::new(&self.initialized, uart, enable, reset, cc, rp, np);
+        let controller = Esp8266Controller::new(&self.initialized, cp, rc, nc);
 
         (controller, modem)
     }
@@ -116,14 +154,16 @@ where
     RESET: OutputPin + 'static,
 {
     pub fn new(
+        initialized: &'a Initialized,
         uart: UART,
         enable: ENABLE,
         reset: RESET,
-        command_consumer: ChannelReceiver<'a, String<consts::U128>, consts::U2>,
+        command_consumer: ChannelReceiver<'a, CommandBuffer, consts::U1>,
         response_producer: ChannelSender<'a, AtResponse, consts::U2>,
         notification_producer: ChannelSender<'a, AtResponse, consts::U2>,
     ) -> Self {
         Self {
+            initialized,
             uart,
             enable,
             reset,
@@ -134,13 +174,13 @@ where
         }
     }
 
-    async fn initialize(&mut self) {
+    async fn initialize(&mut self) -> Result<(), DriverError> {
         let mut buffer: [u8; 1024] = [0; 1024];
         let mut pos = 0;
 
         const READY: [u8; 7] = *b"ready\r\n";
 
-        info!("waiting for adapter to become ready");
+        trace!("Waiting for adapter to become ready");
 
         self.enable.set_high().ok().unwrap();
         self.reset.set_high().ok().unwrap();
@@ -154,37 +194,30 @@ where
                         buffer[pos] = rx_buf[0];
                         pos += 1;
                         if pos >= READY.len() && buffer[pos - READY.len()..pos] == READY {
-                            info!("adapter is ready");
-                            self.disable_echo()
-                                .await
-                                .expect("Error disabling echo mode");
-                            info!("Echo disabled");
-                            self.enable_mux().await.expect("Error enabling mux");
-                            info!("Mux enabled");
-                            self.set_recv_mode()
-                                .await
-                                .expect("Error setting receive mode");
-                            info!("Recv mode configured");
-                            self.set_mode().await.expect("Error setting station mode");
-                            info!("adapter configured");
-                            break;
+                            self.disable_echo().await?;
+                            trace!("Echo disabled");
+                            self.enable_mux().await?;
+                            trace!("Mux enabled");
+                            self.set_recv_mode().await?;
+                            trace!("Recv mode configured");
+                            self.set_mode().await?;
+                            trace!("adapter configured");
+                            return Ok(());
                         }
                     }
                 }
                 Err(e) => {
                     error!("Error initializing ESP8266 modem: {:?}", e);
-                    break;
+                    return Err(DriverError::UnableToInitialize);
                 }
             }
         }
     }
 
     async fn disable_echo(&mut self) -> Result<(), DriverError> {
-        info!("Disabling echo");
         uart_write(&mut self.uart, b"ATE0\r\n")
             .await
             .map_err(|_| DriverError::UnableToInitialize)?;
-        info!("Command sent");
         Ok(self
             .wait_for_ok()
             .await
@@ -241,7 +274,8 @@ where
     /// Run the processing loop until an error is encountered
     pub async fn run(&mut self) -> ! {
         // Result<(), DriverError> where Self: 'a {
-        self.initialize().await;
+        let result = self.initialize().await;
+        self.initialized.signal(result);
         loop {
             let mut buf = [0; 1];
             let (cmd, input) = {
@@ -285,7 +319,7 @@ where
 
         if let Ok(response) = result {
             if !matches!(response, AtResponse::None) {
-                //trace!("--> {:?}", response);
+                trace!("--> {:?}", response);
             }
             match response {
                 AtResponse::None => {}
@@ -310,13 +344,13 @@ where
                     self.notification_producer.send(response).await;
                 }
                 AtResponse::WifiConnected => {
-                    info!("wifi connected");
+                    debug!("wifi connected");
                 }
                 AtResponse::WifiDisconnect => {
-                    info!("wifi disconnect");
+                    debug!("wifi disconnect");
                 }
                 AtResponse::GotIp => {
-                    info!("wifi got ip");
+                    debug!("wifi got ip");
                 }
             }
         }
@@ -326,11 +360,13 @@ where
 
 impl<'a> Esp8266Controller<'a> {
     pub fn new(
-        command_producer: ChannelSender<'a, String<consts::U128>, consts::U2>,
+        initialized: &'a Initialized,
+        command_producer: ChannelSender<'a, CommandBuffer, consts::U1>,
         response_consumer: ChannelReceiver<'a, AtResponse, consts::U2>,
         notification_consumer: ChannelReceiver<'a, AtResponse, consts::U2>,
     ) -> Self {
         Self {
+            initialized,
             socket_pool: SocketPool::new(),
             command_producer,
             response_consumer,
@@ -339,6 +375,9 @@ impl<'a> Esp8266Controller<'a> {
     }
 
     async fn send<'c>(&self, command: Command<'c>) -> Result<AtResponse, DriverError> {
+        trace!("Sending command");
+        self.initialized.wait().await?;
+        trace!("Confirmed initialized");
         let mut bytes = command.as_bytes();
         trace!(
             "writing command {}",
@@ -385,7 +424,7 @@ impl<'a> Esp8266Controller<'a> {
     async fn process_notifications(&mut self) {
         while let Some(response) = self.notification_consumer.try_receive().await {
             match response {
-                AtResponse::DataAvailable { link_id, len } => {
+                AtResponse::DataAvailable { .. } => {
                     //  shared.socket_pool // [link_id].available += len;
                 }
                 AtResponse::Connect(_) => {}
@@ -475,13 +514,13 @@ impl<'a> TcpStack for Esp8266Controller<'a> {
                             }
                         }
                         r => {
-                            info!("Unexpected response: {:?}", r);
+                            warn!("Unexpected response: {:?}", r);
                             Err(TcpError::WriteError)
                         }
                     }
                 }
                 Ok(r) => {
-                    info!("Unexpected response: {:?}", r);
+                    warn!("Unexpected response: {:?}", r);
                     Err(TcpError::WriteError)
                 }
                 Err(_) => Err(TcpError::WriteError),
