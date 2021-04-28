@@ -9,15 +9,6 @@
 mod tests {
     use drogue_device::{testutil::*, *, actors::button::*};
 
-    impl FromButtonEvent<TestMessage> for TestHandler {
-        fn from(event: ButtonEvent) -> Option<TestMessage> {
-            match event {
-                ButtonEvent::Pressed => Some(TestMessage(0)),
-                ButtonEvent::Released => Some(TestMessage(1)),
-            }
-        }
-    }
-
     #[derive(Device)]
     struct TestDevicePressed {
         handler: ActorContext<'static, TestHandler>,
