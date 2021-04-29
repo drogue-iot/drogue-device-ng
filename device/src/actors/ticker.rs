@@ -31,8 +31,6 @@ where
 {
     type Configuration = Address<'a, A>;
     #[rustfmt::skip]
-    type Message<'m> where 'a: 'm = ();
-    #[rustfmt::skip]
     type OnStartFuture<'m> where 'a: 'm = impl Future<Output = ()> + 'm;
     #[rustfmt::skip]
     type OnMessageFuture<'m> where 'a: 'm = impl Future<Output = ()> + 'm;

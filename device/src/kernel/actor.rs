@@ -1,4 +1,6 @@
-use super::channel::{consts, ArrayLength, Channel, ChannelReceiver, ChannelSend, ChannelSender};
+use super::channel::{
+    consts, ArrayLength, Channel, ChannelReceive, ChannelReceiver, ChannelSend, ChannelSender,
+};
 use super::signal::{SignalFuture, SignalSlot};
 use core::cell::UnsafeCell;
 use core::future::Future;
@@ -9,9 +11,13 @@ use generic_array::GenericArray;
 
 /// Trait that each actor must implement.
 pub trait Actor: Sized {
-    /// Queue size;
+    /// Request queue size;
     #[rustfmt::skip]
-    type MaxQueueSize<'a>: ArrayLength<ActorMessage<'a, Self>> + ArrayLength<SignalSlot> + 'a where Self: 'a = consts::U1;
+    type MaxQueueSize<'a>: ArrayLength<ActorMessage<'a, Self>> + ArrayLength<SignalSlot<Self::Response<'a>>> + 'a where Self: 'a = consts::U1;
+
+    /// Notify queue size;
+    //    #[rustfmt::skip]
+    //    type MaxNotifyQueueSize<'a>: ArrayLength<NotifyMessage<'a, Self>> + 'a where Self: 'a = consts::U0;
 
     /// The configuration that this actor will expect when mounted.
     type Configuration = ();
@@ -19,7 +25,13 @@ pub trait Actor: Sized {
     /// The message type that this actor will handle in `on_message`.
     type Message<'a>: Sized
     where
-        Self: 'a;
+        Self: 'a,
+    = ();
+
+    type Response<'a>: Send + Copy
+    where
+        Self: 'a,
+    = ();
 
     /// The future type returned in `on_start`, usually derived from an `async move` block
     /// in the implementation
@@ -29,7 +41,7 @@ pub trait Actor: Sized {
 
     /// The future type returned in `on_message`, usually derived from an `async move` block
     /// in the implementation
-    type OnMessageFuture<'a>: Future<Output = ()>
+    type OnMessageFuture<'a>: Future<Output = Self::Response<'a>>
     where
         Self: 'a;
 
@@ -109,22 +121,55 @@ impl<'a, A: Actor> Clone for Address<'a, A> {
     }
 }
 
+pub struct MessageChannel<'a, T, N>
+where
+    N: ArrayLength<T>,
+{
+    channel: UnsafeCell<Channel<T, N>>,
+    channel_sender: UnsafeCell<Option<ChannelSender<'a, T, N>>>,
+    channel_receiver: UnsafeCell<Option<ChannelReceiver<'a, T, N>>>,
+}
+
+impl<'a, T, N> MessageChannel<'a, T, N>
+where
+    N: ArrayLength<T>,
+{
+    pub fn new() -> Self {
+        Self {
+            channel: UnsafeCell::new(Channel::new()),
+            channel_sender: UnsafeCell::new(None),
+            channel_receiver: UnsafeCell::new(None),
+        }
+    }
+
+    pub fn initialize(&'a self) {
+        let (sender, receiver) = unsafe { &mut *self.channel.get() }.split();
+        unsafe { &mut *self.channel_sender.get() }.replace(sender);
+        unsafe { &mut *self.channel_receiver.get() }.replace(receiver);
+    }
+
+    pub fn send<'m>(&self, message: T) -> ChannelSend<'m, 'a, T, N> {
+        let sender = unsafe { &mut *self.channel_sender.get() }.as_mut().unwrap();
+        sender.send(message)
+    }
+
+    pub fn receive<'m>(&self) -> ChannelReceive<'m, 'a, T, N> {
+        let receiver = unsafe { &*self.channel_receiver.get() }.as_ref().unwrap();
+        receiver.receive()
+    }
+}
+
 pub struct ActorContext<'a, A: Actor> {
     pub actor: UnsafeCell<A>,
-    channel: UnsafeCell<Channel<ActorMessage<'a, A>, A::MaxQueueSize<'a>>>,
-    channel_sender: UnsafeCell<Option<ChannelSender<'a, ActorMessage<'a, A>, A::MaxQueueSize<'a>>>>,
-    channel_receiver:
-        UnsafeCell<Option<ChannelReceiver<'a, ActorMessage<'a, A>, A::MaxQueueSize<'a>>>>,
-    signals: UnsafeCell<GenericArray<SignalSlot, A::MaxQueueSize<'a>>>,
+    request_channel: MessageChannel<'a, ActorMessage<'a, A>, A::MaxQueueSize<'a>>,
+    signals: UnsafeCell<GenericArray<SignalSlot<A::Response<'a>>, A::MaxQueueSize<'a>>>,
 }
 
 impl<'a, A: Actor> ActorContext<'a, A> {
     pub fn new(actor: A) -> Self {
         Self {
             actor: UnsafeCell::new(actor),
-            channel: UnsafeCell::new(Channel::new()),
-            channel_sender: UnsafeCell::new(None),
-            channel_receiver: UnsafeCell::new(None),
+            request_channel: MessageChannel::new(),
             signals: UnsafeCell::new(Default::default()),
         }
     }
@@ -136,18 +181,17 @@ impl<'a, A: Actor> ActorContext<'a, A> {
     {
         let actor = unsafe { Pin::new_unchecked(&mut *self.actor.get()) };
 
-        let receiver = unsafe { &*self.channel_receiver.get() }.as_ref().unwrap();
         actor.on_start().await;
 
         crate::log_stack!();
         loop {
-            let message = receiver.receive().await;
+            let message = self.request_channel.receive().await;
             let actor = unsafe { Pin::new_unchecked(&mut *self.actor.get()) };
             match message {
                 ActorMessage::Send(message, signal) => {
                     crate::log_stack!();
-                    actor.on_message(unsafe { &mut *message }).await;
-                    unsafe { &*signal }.signal();
+                    let value = actor.on_message(unsafe { &mut *message }).await;
+                    unsafe { &*signal }.signal(value);
                 }
                 ActorMessage::Notify(mut message) => {
                     crate::log_stack!();
@@ -163,7 +207,7 @@ impl<'a, A: Actor> ActorContext<'a, A> {
     }
 
     /// Acquire a signal slot if there are any free available
-    fn acquire_signal(&self) -> &SignalSlot {
+    fn acquire_signal(&self) -> &SignalSlot<A::Response<'a>> {
         let signals = unsafe { &mut *self.signals.get() };
         let mut i = 0;
         while i < signals.len() {
@@ -184,10 +228,7 @@ impl<'a, A: Actor> ActorContext<'a, A> {
         let signal = self.acquire_signal();
         let message = unsafe { core::mem::transmute::<_, &'a mut A::Message<'a>>(message) };
         let message = ActorMessage::new_send(message, signal);
-        let chan = {
-            let sender = unsafe { &mut *self.channel_sender.get() }.as_mut().unwrap();
-            sender.send(message)
-        };
+        let chan = self.request_channel.send(message);
         let sig = SignalFuture::new(signal);
         ProcessFuture::new(chan, sig)
     }
@@ -200,19 +241,14 @@ impl<'a, A: Actor> ActorContext<'a, A> {
     {
         let message = ActorMessage::new_notify(message);
 
-        let chan = {
-            let sender = unsafe { &mut *self.channel_sender.get() }.as_mut().unwrap();
-            sender.send(message)
-        };
+        let chan = self.request_channel.send(message);
         NotifyFuture::new(chan)
     }
 
     /// Mount the underloying actor and initialize the channel.
     pub fn mount(&'a self, config: A::Configuration) -> Address<'a, A> {
         unsafe { &mut *self.actor.get() }.on_mount(config);
-        let (sender, receiver) = unsafe { &mut *self.channel.get() }.split();
-        unsafe { &mut *self.channel_sender.get() }.replace(sender);
-        unsafe { &mut *self.channel_receiver.get() }.replace(receiver);
+        self.request_channel.initialize();
         Address::new(self)
     }
 }
@@ -221,7 +257,6 @@ impl<'a, A: Actor> ActorContext<'a, A> {
 enum ProcessState {
     WaitChannel,
     WaitSignal,
-    Done,
 }
 
 pub struct NotifyFuture<'a, 'm, A: Actor + 'a> {
@@ -252,7 +287,7 @@ impl<'a, 'm, A: Actor> Future for NotifyFuture<'a, 'm, A> {
 
 pub struct ProcessFuture<'a, 'm, A: Actor + 'a> {
     channel: ChannelSend<'m, 'a, ActorMessage<'a, A>, A::MaxQueueSize<'a>>,
-    signal: SignalFuture<'a, 'm>,
+    signal: SignalFuture<'a, 'm, A::Response<'a>>,
     state: ProcessState,
     bomb: Option<DropBomb>,
 }
@@ -260,7 +295,7 @@ pub struct ProcessFuture<'a, 'm, A: Actor + 'a> {
 impl<'a, 'm, A: Actor> ProcessFuture<'a, 'm, A> {
     pub fn new(
         channel: ChannelSend<'m, 'a, ActorMessage<'a, A>, A::MaxQueueSize<'a>>,
-        signal: SignalFuture<'a, 'm>,
+        signal: SignalFuture<'a, 'm, A::Response<'a>>,
     ) -> Self {
         Self {
             channel,
@@ -272,44 +307,40 @@ impl<'a, 'm, A: Actor> ProcessFuture<'a, 'm, A> {
 }
 
 impl<'a, 'm, A: Actor> Future for ProcessFuture<'a, 'm, A> {
-    type Output = ();
+    type Output = A::Response<'a>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         loop {
-            let result = match self.state {
+            match self.state {
                 ProcessState::WaitChannel => {
                     let result = Pin::new(&mut self.channel).poll(cx);
                     if result.is_ready() {
                         self.state = ProcessState::WaitSignal;
+                    } else {
+                        return Poll::Pending;
                     }
-                    result
                 }
                 ProcessState::WaitSignal => {
                     let result = Pin::new(&mut self.signal).poll(cx);
                     if result.is_ready() {
-                        self.state = ProcessState::Done;
+                        self.bomb.take().unwrap().defuse();
+                        return result;
+                    } else {
+                        return Poll::Pending;
                     }
-                    result
                 }
-                ProcessState::Done => {
-                    self.bomb.take().unwrap().defuse();
-                    return Poll::Ready(());
-                }
-            };
-            if result.is_pending() {
-                return result;
             }
         }
     }
 }
 
 pub enum ActorMessage<'m, A: Actor + 'm> {
-    Send(*mut A::Message<'m>, *const SignalSlot),
+    Send(*mut A::Message<'m>, *const SignalSlot<A::Response<'m>>),
     Notify(A::Message<'m>),
 }
 
 impl<'m, A: Actor> ActorMessage<'m, A> {
-    fn new_send(message: *mut A::Message<'m>, signal: *const SignalSlot) -> Self {
+    fn new_send(message: *mut A::Message<'m>, signal: *const SignalSlot<A::Response<'m>>) -> Self {
         ActorMessage::Send(message, signal)
     }
 
