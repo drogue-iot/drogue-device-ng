@@ -97,7 +97,7 @@ pub mod traits;
 pub mod drivers;
 
 #[doc(hidden)]
-pub use drogue_device_macros::{self as drogue, Device, Package};
+pub use drogue_device_macros::{self as drogue, log_stack, Device, Package};
 pub use embassy::*;
 
 #[cfg(feature = "chip+nrf52833")]
@@ -124,8 +124,8 @@ pub use embassy_std::*;
 #[cfg(feature = "std")]
 pub mod testutil;
 
-pub fn log_stack(whr: &'static str) {
+pub fn print_stack(file: &'static str, line: u32) {
     let _u: u32 = 1;
     let _uptr: *const u32 = &_u;
-    log::info!("[{}] SP: 0x{:p}", whr, &_uptr);
+    log::trace!("[{}:{}] SP: 0x{:p}", file, line, &_uptr);
 }

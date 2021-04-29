@@ -40,13 +40,16 @@ use drogue_device::{
 };
 
 mod app;
+mod lora;
+
 use app::*;
 use drogue_device::actors::led::Led;
+use lora::*;
 
 const DEV_EUI: &str = include_str!(concat!(env!("OUT_DIR"), "/config/dev_eui.txt"));
 const APP_EUI: &str = include_str!(concat!(env!("OUT_DIR"), "/config/app_eui.txt"));
 const APP_KEY: &str = include_str!(concat!(env!("OUT_DIR"), "/config/app_key.txt"));
-static LOGGER: RTTLogger = RTTLogger::new(LevelFilter::Trace);
+static LOGGER: RTTLogger = RTTLogger::new(LevelFilter::Info);
 
 static mut RNG: Option<Rng> = None;
 fn get_random_u32() -> u32 {
@@ -83,6 +86,7 @@ type Led4Pin = PB7<Output<PushPull>>;
 
 #[derive(Device)]
 pub struct MyDevice {
+    lora: ActorContext<'static, LoraActor<Sx127x<'static>>>,
     button: ActorContext<
         'static,
         Button<
@@ -105,7 +109,7 @@ async fn main(context: DeviceContext<MyDevice>) {
         log::set_logger_racy(&LOGGER).unwrap();
     }
 
-    log::set_max_level(log::LevelFilter::Trace);
+    log::set_max_level(log::LevelFilter::Info);
     let device = unsafe { Peripherals::steal() };
 
     // NEEDED FOR RTT
@@ -169,25 +173,25 @@ async fn main(context: DeviceContext<MyDevice>) {
         .app_key(&APP_KEY.trim_end().into());
 
     log::info!("Configuring with config {:?}", config);
-    log_stack("Before configure");
 
     context.configure(MyDevice {
-        app: ActorContext::new(App::new(lora, config)),
+        app: ActorContext::new(App::new(config)),
+        lora: ActorContext::new(LoraActor::new(lora)),
         button: ActorContext::new(Button::new(pin)),
         led1: ActorContext::new(Led::new(led1)),
         led2: ActorContext::new(Led::new(led2)),
         led3: ActorContext::new(Led::new(led3)),
         led4: ActorContext::new(Led::new(led4)),
     });
-    log_stack("After configure, before mount");
 
     context.mount(|device| {
-        log_stack("After configure, inside mount");
+        let lora = device.lora.mount(());
         let led1 = device.led1.mount(());
         let led2 = device.led2.mount(());
         let led3 = device.led3.mount(());
         let led4 = device.led4.mount(());
         let app = device.app.mount(AppConfig {
+            lora,
             led1,
             led2,
             led3,
@@ -195,12 +199,4 @@ async fn main(context: DeviceContext<MyDevice>) {
         });
         device.button.mount(app);
     });
-
-    log_stack("After mount");
-}
-
-pub fn log_stack(whr: &'static str) {
-    let _u: u32 = 1;
-    let _uptr: *const u32 = &_u;
-    log::info!("[{}] SP: 0x{:p}", whr, &_uptr);
 }
