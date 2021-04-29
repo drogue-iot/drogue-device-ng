@@ -184,11 +184,13 @@ async fn main(context: DeviceContext<MyDevice>) {
         led4: ActorContext::new(Led::new(led4)),
     });
 
+    /*
     print_size::<LoraActor<Sx127x<'static>>>("LoraActor");
     print_size::<ActorContext<'static, LoraActor<Sx127x<'static>>>>("ActorContext<LoraActor>");
     print_size::<ActorContext<'static, Led<Led1Pin>>>("ActorContext<Led1Pin>");
     print_size::<Led<Led1Pin>>("Led<Led1Pin>");
     print_size::<Led1Pin>("Led1Pin");
+    */
 
     context.mount(|device| {
         let lora = device.lora.mount(());

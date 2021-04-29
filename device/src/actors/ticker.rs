@@ -50,10 +50,7 @@ where
         }
     }
 
-    fn on_message<'m>(
-        self: Pin<&'m mut Self>,
-        _: &'m mut Self::Message<'m>,
-    ) -> Self::OnMessageFuture<'m> {
+    fn on_message<'m>(self: Pin<&'m mut Self>, _: Self::Message<'m>) -> Self::OnMessageFuture<'m> {
         async move {}
     }
 }
