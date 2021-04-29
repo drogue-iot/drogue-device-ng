@@ -5,7 +5,9 @@ use drogue_device::actors::led::{Led, LedMessage};
 use drogue_device::{actors::button::*, traits::lora::*, *};
 use embassy_stm32::system::OutputPin;
 
+#[derive(Clone, Copy)]
 pub enum Command {
+    Tick,
     Send,
 }
 
@@ -20,7 +22,7 @@ where
     fn from(event: ButtonEvent) -> Option<Command> {
         match event {
             ButtonEvent::Pressed => None,
-            ButtonEvent::Released => Some(Command::Send),
+            ButtonEvent::Released => Some(Command::Tick),
         }
     }
 }
@@ -55,6 +57,7 @@ where
 {
     config: Option<LoraConfig>,
     cfg: Option<AppConfig<'static, D, P1, P2, P3, P4>>,
+    counter: usize,
 }
 
 impl<D, P1, P2, P3, P4> App<D, P1, P2, P3, P4>
@@ -69,6 +72,7 @@ where
         Self {
             config: Some(config),
             cfg: None,
+            counter: 0,
         }
     }
 }
@@ -120,12 +124,16 @@ where
     }
 
     fn on_message<'m>(
-        self: Pin<&'m mut Self>,
+        mut self: Pin<&'m mut Self>,
         message: Self::Message<'m>,
     ) -> Self::OnMessageFuture<'m> {
         async move {
             log_stack!();
             match message {
+                Command::Tick => {
+                    self.counter += 1;
+                    log::info!("Ticked: {}", self.counter);
+                }
                 Command::Send => {
                     if let Some(cfg) = &self.cfg {
                         log::info!("Sending message...");

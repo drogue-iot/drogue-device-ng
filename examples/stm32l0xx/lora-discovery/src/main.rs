@@ -15,6 +15,8 @@ use rtt_target::rtt_init_print;
 
 use drogue_device::{
     actors::button::*,
+    actors::led::*,
+    actors::ticker::*,
     drivers::lora::sx127x::*,
     stm32::{
         exti::ExtiPin,
@@ -43,7 +45,7 @@ mod app;
 mod lora;
 
 use app::*;
-use drogue_device::actors::led::Led;
+use embassy::time::Duration;
 use lora::*;
 
 const DEV_EUI: &str = include_str!(concat!(env!("OUT_DIR"), "/config/dev_eui.txt"));
@@ -100,6 +102,10 @@ pub struct MyDevice {
     led2: ActorContext<'static, Led<Led2Pin>>,
     led3: ActorContext<'static, Led<Led3Pin>>,
     led4: ActorContext<'static, Led<Led4Pin>>,
+    ticker: ActorContext<
+        'static,
+        Ticker<'static, App<Sx127x<'static>, Led1Pin, Led2Pin, Led3Pin, Led4Pin>>,
+    >,
 }
 
 #[drogue::main(config = "embassy_stm32::hal::rcc::Config::hsi16()")]
@@ -182,6 +188,7 @@ async fn main(context: DeviceContext<MyDevice>) {
         led2: ActorContext::new(Led::new(led2)),
         led3: ActorContext::new(Led::new(led3)),
         led4: ActorContext::new(Led::new(led4)),
+        ticker: ActorContext::new(Ticker::new(Duration::from_secs(60), Command::Send)),
     });
 
     /*
@@ -205,6 +212,7 @@ async fn main(context: DeviceContext<MyDevice>) {
             led3,
             led4,
         });
+        device.ticker.mount(app);
         device.button.mount(app);
     });
 }
