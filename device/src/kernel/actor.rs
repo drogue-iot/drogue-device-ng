@@ -17,7 +17,7 @@ use generic_array::GenericArray;
 pub trait Actor: Sized {
     /// Request queue size;
     #[rustfmt::skip]
-    type MaxQueueSize<'a>: ArrayLength<RequestMessage<'a, Self>> + ArrayLength<SignalSlot<Self::Response<'a>>> + 'a where Self: 'a = consts::U1;
+    type MaxRequestQueueSize<'a>: ArrayLength<RequestMessage<'a, Self>> + ArrayLength<SignalSlot<Self::Response<'a>>> + 'a where Self: 'a = consts::U1;
 
     /// Notify queue size;
     #[rustfmt::skip]
@@ -89,6 +89,8 @@ impl<'a, A: Actor> Address<'a, A> {
     ///
     /// The returned future will be driven to completion by the actor processing the message,
     /// and will complete when the receiving actor have processed the message.
+    ///
+    /// The result from the actors on_message() handler will be provided on completion.
     ///
     /// # Panics
     /// While the request message may contain non-static references, the user must
@@ -170,8 +172,8 @@ where
 pub struct ActorContext<'a, A: Actor> {
     pub actor: UnsafeCell<A>,
     notify_channel: MessageChannel<'a, NotifyMessage<'a, A>, A::MaxNotifyQueueSize<'a>>,
-    request_channel: MessageChannel<'a, RequestMessage<'a, A>, A::MaxQueueSize<'a>>,
-    signals: UnsafeCell<GenericArray<SignalSlot<A::Response<'a>>, A::MaxQueueSize<'a>>>,
+    request_channel: MessageChannel<'a, RequestMessage<'a, A>, A::MaxRequestQueueSize<'a>>,
+    signals: UnsafeCell<GenericArray<SignalSlot<A::Response<'a>>, A::MaxRequestQueueSize<'a>>>,
 }
 
 impl<'a, A: Actor> ActorContext<'a, A> {
@@ -227,13 +229,15 @@ impl<'a, A: Actor> ActorContext<'a, A> {
         panic!("not enough signals!");
     }
 
-    /// Process a message for this actor. The returned future _must_ be awaited before dropped. If it is not
+    /// Perform a request to this actor. The result from processing the request will be provided when the future completes.
+    /// The returned future _must_ be awaited before dropped. If it is not
     /// awaited, it will panic.
     fn request<'m>(&'a self, message: A::Message<'m>) -> RequestFuture<'a, 'm, A>
     where
         'a: 'm,
     {
         let signal = self.acquire_signal();
+        // Safety: This is OK because A::Message is Sized.
         let message = unsafe { core::mem::transmute_copy::<_, A::Message<'a>>(&message) };
         let message = RequestMessage::new(message, signal);
         let chan = self.request_channel.send(message);
@@ -297,7 +301,7 @@ impl<'a, 'm, A: Actor> Future for NotifyFuture<'a, 'm, A> {
 }
 
 pub struct RequestFuture<'a, 'm, A: Actor + 'a> {
-    channel: ChannelSend<'m, 'a, RequestMessage<'a, A>, A::MaxQueueSize<'a>>,
+    channel: ChannelSend<'m, 'a, RequestMessage<'a, A>, A::MaxRequestQueueSize<'a>>,
     signal: SignalFuture<'a, 'm, A::Response<'a>>,
     state: RequestState,
     bomb: Option<DropBomb>,
@@ -305,7 +309,7 @@ pub struct RequestFuture<'a, 'm, A: Actor + 'a> {
 
 impl<'a, 'm, A: Actor> RequestFuture<'a, 'm, A> {
     pub fn new(
-        channel: ChannelSend<'m, 'a, RequestMessage<'a, A>, A::MaxQueueSize<'a>>,
+        channel: ChannelSend<'m, 'a, RequestMessage<'a, A>, A::MaxRequestQueueSize<'a>>,
         signal: SignalFuture<'a, 'm, A::Response<'a>>,
     ) -> Self {
         Self {
