@@ -75,11 +75,11 @@ impl<'a, A: Actor> Address<'a, A> {
     /// ensure that the response to the request is fully `.await`'d before returning.
     /// Leaving an in-flight request dangling while references have gone out of lifetime
     /// scope will result in a panic.
-    pub fn process<'m>(&self, message: &'m mut A::Message<'m>) -> SendFuture<'a, 'm, A>
+    pub fn process<'m>(&self, message: &'m mut A::Message<'m>) -> ProcessFuture<'a, 'm, A>
     where
         'a: 'm,
     {
-        self.state.send(message)
+        self.state.process(message)
     }
 
     /// Perform an unsafe _async_ message notification to the actor behind this address.
@@ -93,7 +93,7 @@ impl<'a, A: Actor> Address<'a, A> {
     /// ensure that the response to the request is fully `.await`'d before returning.
     /// Leaving an in-flight request dangling while references have gone out of lifetime
     /// scope will result in a panic.
-    pub fn notify<'m>(&self, message: A::Message<'a>) -> SendFuture<'a, 'm, A>
+    pub fn notify<'m>(&self, message: A::Message<'a>) -> NotifyFuture<'a, 'm, A>
     where
         'a: 'm,
     {
@@ -134,12 +134,13 @@ impl<'a, A: Actor> ActorContext<'a, A> {
     where
         A: Unpin,
     {
-        crate::log_stack!();
         let actor = unsafe { Pin::new_unchecked(&mut *self.actor.get()) };
+
         let receiver = unsafe { &*self.channel_receiver.get() }.as_ref().unwrap();
         actor.on_start().await;
+
+        crate::log_stack!();
         loop {
-            crate::log_stack!();
             let message = receiver.receive().await;
             let actor = unsafe { Pin::new_unchecked(&mut *self.actor.get()) };
             match message {
@@ -174,9 +175,9 @@ impl<'a, A: Actor> ActorContext<'a, A> {
         panic!("not enough signals!");
     }
 
-    /// Send a message to this actor. The returned future _must_ be awaited before dropped. If it is not
+    /// Process a message for this actor. The returned future _must_ be awaited before dropped. If it is not
     /// awaited, it will panic.
-    fn send<'m>(&'a self, message: &'m mut A::Message<'m>) -> SendFuture<'a, 'm, A>
+    fn process<'m>(&'a self, message: &'m mut A::Message<'m>) -> ProcessFuture<'a, 'm, A>
     where
         'a: 'm,
     {
@@ -188,12 +189,12 @@ impl<'a, A: Actor> ActorContext<'a, A> {
             sender.send(message)
         };
         let sig = SignalFuture::new(signal);
-        SendFuture::new(chan, Some(sig))
+        ProcessFuture::new(chan, sig)
     }
 
     /// Perform a notification on this actor. The returned future _must_ be awaited before dropped. If it is not
     /// awaited, it will panic.
-    fn notify<'m>(&'a self, message: A::Message<'a>) -> SendFuture<'a, 'm, A>
+    fn notify<'m>(&'a self, message: A::Message<'a>) -> NotifyFuture<'a, 'm, A>
     where
         'a: 'm,
     {
@@ -203,7 +204,7 @@ impl<'a, A: Actor> ActorContext<'a, A> {
             let sender = unsafe { &mut *self.channel_sender.get() }.as_mut().unwrap();
             sender.send(message)
         };
-        SendFuture::new(chan, None)
+        NotifyFuture::new(chan)
     }
 
     /// Mount the underloying actor and initialize the channel.
@@ -217,59 +218,80 @@ impl<'a, A: Actor> ActorContext<'a, A> {
 }
 
 #[derive(PartialEq, Eq)]
-enum SendState {
+enum ProcessState {
     WaitChannel,
     WaitSignal,
     Done,
 }
 
-pub struct SendFuture<'a, 'm, A: Actor + 'a> {
+pub struct NotifyFuture<'a, 'm, A: Actor + 'a> {
     channel: ChannelSend<'m, 'a, ActorMessage<'a, A>, A::MaxQueueSize<'a>>,
-    signal: Option<SignalFuture<'a, 'm>>,
-    state: SendState,
     bomb: Option<DropBomb>,
 }
 
-impl<'a, 'm, A: Actor> SendFuture<'a, 'm, A> {
-    pub fn new(
-        channel: ChannelSend<'m, 'a, ActorMessage<'a, A>, A::MaxQueueSize<'a>>,
-        signal: Option<SignalFuture<'a, 'm>>,
-    ) -> Self {
+impl<'a, 'm, A: Actor> NotifyFuture<'a, 'm, A> {
+    pub fn new(channel: ChannelSend<'m, 'a, ActorMessage<'a, A>, A::MaxQueueSize<'a>>) -> Self {
         Self {
             channel,
-            signal,
-            state: SendState::WaitChannel,
             bomb: Some(DropBomb::new()),
         }
     }
 }
 
-impl<'a, 'm, A: Actor> Future for SendFuture<'a, 'm, A> {
+impl<'a, 'm, A: Actor> Future for NotifyFuture<'a, 'm, A> {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let result = Pin::new(&mut self.channel).poll(cx);
+        if result.is_ready() {
+            self.bomb.take().unwrap().defuse();
+        }
+        result
+    }
+}
+
+pub struct ProcessFuture<'a, 'm, A: Actor + 'a> {
+    channel: ChannelSend<'m, 'a, ActorMessage<'a, A>, A::MaxQueueSize<'a>>,
+    signal: SignalFuture<'a, 'm>,
+    state: ProcessState,
+    bomb: Option<DropBomb>,
+}
+
+impl<'a, 'm, A: Actor> ProcessFuture<'a, 'm, A> {
+    pub fn new(
+        channel: ChannelSend<'m, 'a, ActorMessage<'a, A>, A::MaxQueueSize<'a>>,
+        signal: SignalFuture<'a, 'm>,
+    ) -> Self {
+        Self {
+            channel,
+            signal,
+            state: ProcessState::WaitChannel,
+            bomb: Some(DropBomb::new()),
+        }
+    }
+}
+
+impl<'a, 'm, A: Actor> Future for ProcessFuture<'a, 'm, A> {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         loop {
             let result = match self.state {
-                SendState::WaitChannel => {
+                ProcessState::WaitChannel => {
                     let result = Pin::new(&mut self.channel).poll(cx);
                     if result.is_ready() {
-                        self.state = if self.signal.is_some() {
-                            SendState::WaitSignal
-                        } else {
-                            SendState::Done
-                        };
+                        self.state = ProcessState::WaitSignal;
                     }
                     result
                 }
-                SendState::WaitSignal => {
-                    let mut signal = self.signal.as_mut().unwrap();
-                    let result = Pin::new(&mut signal).poll(cx);
+                ProcessState::WaitSignal => {
+                    let result = Pin::new(&mut self.signal).poll(cx);
                     if result.is_ready() {
-                        self.state = SendState::Done;
+                        self.state = ProcessState::Done;
                     }
                     result
                 }
-                SendState::Done => {
+                ProcessState::Done => {
                     self.bomb.take().unwrap().defuse();
                     return Poll::Ready(());
                 }
