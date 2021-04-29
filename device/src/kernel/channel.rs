@@ -46,6 +46,9 @@ impl<T, N: ArrayLength<T>> ChannelInner<T, N> {
     }
 
     fn split(&mut self) -> (ChannelSender<'_, T, N>, ChannelReceiver<'_, T, N>) {
+        crate::print_value_size("queue", &self.queue);
+        crate::print_value_size("sender_waker", &self.sender_waker);
+        crate::print_value_size("receive_waker", &self.receiver_waker);
         let (sender, receiver) = unsafe { (&mut *self.queue.get()).split() };
         (
             ChannelSender::new(sender, self),

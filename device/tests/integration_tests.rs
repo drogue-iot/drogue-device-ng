@@ -21,6 +21,8 @@ mod tests {
 
         pub struct Add(u32);
         impl Actor for MyActor {
+            type MaxRequestQueueSize<'a> = consts::U1;
+            type MaxNotifyQueueSize<'a> = consts::U0;
             type Configuration = ();
             type Message<'a> = Add;
             type OnStartFuture<'a> = ImmediateFuture;
@@ -52,7 +54,11 @@ mod tests {
                 }),
             });
 
-            let a_addr = context.mount(|device| device.a.mount(()));
+            let a_addr = context.mount(|device| {
+                print_value_size("device", device);
+                print_value_size("actor", &device.a);
+                device.a.mount(())
+            });
 
             a_addr.request(Add(10)).await;
         }
@@ -86,4 +92,13 @@ mod tests {
             Err(_) => panic!("Thread took too long"),
         }
     }
+
+#[allow(unused_variables)]
+pub fn print_value_size<T>(name: &'static str, val: &T) {
+    println!(
+        "[{}] value size: {}",
+        name,
+        core::mem::size_of_val::<T>(val)
+    );
+}
 }

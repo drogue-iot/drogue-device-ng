@@ -191,6 +191,11 @@ impl<'a, A: Actor> ActorContext<'a, A> {
     where
         A: Unpin,
     {
+        crate::print_value_size("actor", &self.actor);
+        crate::print_value_size("notify_channel", &self.notify_channel);
+        crate::print_value_size("request_channel", &self.request_channel);
+        crate::print_value_size("signals", &self.signals);
+
         let actor = unsafe { Pin::new_unchecked(&mut *self.actor.get()) };
 
         actor.on_start().await;

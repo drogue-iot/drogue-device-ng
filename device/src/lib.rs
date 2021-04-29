@@ -138,9 +138,9 @@ pub fn print_size<T>(name: &'static str) {
 
 #[allow(unused_variables)]
 pub fn print_value_size<T>(name: &'static str, val: &T) {
-    /*    log::info!(
+    println!(
         "[{}] value size: {}",
         name,
         core::mem::size_of_val::<T>(val)
-    );*/
+    );
 }
