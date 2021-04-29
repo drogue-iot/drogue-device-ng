@@ -36,7 +36,7 @@ where
     P: OutputPin,
 {
     #[rustfmt::skip]
-    type MaxQueueSize<'m> where Self: 'm = consts::U16;
+    type MaxNotifyQueueSize<'m> where Self: 'm = consts::U16;
     type Configuration = ();
     #[rustfmt::skip]
     type Message<'m> where Self: 'm = LedMessage;
