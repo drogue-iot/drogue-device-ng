@@ -10,21 +10,13 @@ use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 use embassy::util::DropBomb;
-use futures::future::{select, Either};
-use generic_array::GenericArray;
+use embassy::util::Signal;
 
 /// Trait that each actor must implement.
 pub trait Actor: Sized {
     /// Request queue size;
     #[rustfmt::skip]
-    type MaxRequestQueueSize<'a>: ArrayLength<RequestMessage<'a, Self>> + ArrayLength<SignalSlot<Self::Response<'a>>> + 'a where Self: 'a = consts::U1;
-
-    /// Notify queue size;
-    #[rustfmt::skip]
-    type MaxNotifyQueueSize<'a>: ArrayLength<NotifyMessage<'a, Self>> + 'a
-    where
-        Self: 'a,
-    = consts::U1;
+    type MaxMessageQueueSize<'a>: ArrayLength<ActorMessage<'a, Self>> + 'a where Self: 'a = consts::U1;
 
     /// The configuration that this actor will expect when mounted.
     type Configuration = ();
@@ -97,11 +89,17 @@ impl<'a, A: Actor> Address<'a, A> {
     /// Leaving an in-flight request dangling while references have gone out of lifetime
     /// scope will result in a panic.
     #[must_use = "The returned future must be awaited"]
-    pub fn request<'m>(&self, message: A::Message<'m>) -> RequestFuture<'a, 'm, A>
+    pub async fn request<'m>(&self, message: A::Message<'m>) -> A::Response<'a>
     where
         'a: 'm,
     {
-        self.state.request(message)
+        #[rustfmt::skip]
+        let signal: SignalFuture<A::Response<'a>> = SignalFuture::new();
+        unsafe {
+            self.state
+                .request(message, core::mem::transmute(&signal))
+                .await
+        }
     }
 
     /// Perform an _async_ message notification to the actor behind this address.
@@ -171,18 +169,14 @@ where
 
 pub struct ActorContext<'a, A: Actor> {
     pub actor: UnsafeCell<A>,
-    notify_channel: MessageChannel<'a, NotifyMessage<'a, A>, A::MaxNotifyQueueSize<'a>>,
-    request_channel: MessageChannel<'a, RequestMessage<'a, A>, A::MaxRequestQueueSize<'a>>,
-    signals: UnsafeCell<GenericArray<SignalSlot<A::Response<'a>>, A::MaxRequestQueueSize<'a>>>,
+    channel: MessageChannel<'a, ActorMessage<'a, A>, A::MaxMessageQueueSize<'a>>,
 }
 
 impl<'a, A: Actor> ActorContext<'a, A> {
     pub fn new(actor: A) -> Self {
         Self {
             actor: UnsafeCell::new(actor),
-            notify_channel: MessageChannel::new(),
-            request_channel: MessageChannel::new(),
-            signals: UnsafeCell::new(Default::default()),
+            channel: MessageChannel::new(),
         }
     }
 
@@ -192,9 +186,8 @@ impl<'a, A: Actor> ActorContext<'a, A> {
         A: Unpin,
     {
         crate::print_value_size("actor", &self.actor);
-        crate::print_value_size("notify_channel", &self.notify_channel);
-        crate::print_value_size("request_channel", &self.request_channel);
-        crate::print_value_size("signals", &self.signals);
+        crate::print_value_size("channel", &self.channel);
+        //        crate::print_value_size("signal", &self.signal);
 
         let actor = unsafe { Pin::new_unchecked(&mut *self.actor.get()) };
 
@@ -204,16 +197,14 @@ impl<'a, A: Actor> ActorContext<'a, A> {
         loop {
             // crate::log_stack!();
             let actor = unsafe { Pin::new_unchecked(&mut *self.actor.get()) };
-            let request_fut = self.request_channel.receive();
-            let notify_fut = self.notify_channel.receive();
-
-            match select(request_fut, notify_fut).await {
-                Either::Left((RequestMessage { message, signal }, _)) => {
+            match self.channel.receive().await {
+                ActorMessage::Request(message, signal) => {
                     // crate::log_stack!();
                     let value = actor.on_message(message).await;
-                    unsafe { &*signal }.signal(value);
+                    println!("Message handled, signalling!");
+                    signal.signal(value);
                 }
-                Either::Right((NotifyMessage { message }, _)) => {
+                ActorMessage::Notify(message) => {
                     // crate::log_stack!();
                     actor.on_message(message).await;
                 }
@@ -221,33 +212,26 @@ impl<'a, A: Actor> ActorContext<'a, A> {
         }
     }
 
-    /// Acquire a signal slot if there are any free available
-    fn acquire_signal(&self) -> &SignalSlot<A::Response<'a>> {
-        let signals = unsafe { &mut *self.signals.get() };
-        let mut i = 0;
-        while i < signals.len() {
-            if signals[i].acquire() {
-                return &signals[i];
-            }
-            i += 1;
-        }
-        panic!("not enough signals!");
-    }
-
     /// Perform a request to this actor. The result from processing the request will be provided when the future completes.
     /// The returned future _must_ be awaited before dropped. If it is not
     /// awaited, it will panic.
-    fn request<'m>(&'a self, message: A::Message<'m>) -> RequestFuture<'a, 'm, A>
+    unsafe fn request<'m>(
+        &'a self,
+        message: A::Message<'m>,
+        signal: &'m SignalFuture<A::Response<'m>>,
+    ) -> RequestFuture<'a, 'm, A>
     where
         'a: 'm,
     {
-        let signal = self.acquire_signal();
         // Safety: This is OK because A::Message is Sized.
-        let message = unsafe { core::mem::transmute_copy::<_, A::Message<'a>>(&message) };
-        let message = RequestMessage::new(message, signal);
-        let chan = self.request_channel.send(message);
-        let sig = SignalFuture::new(signal);
-        RequestFuture::new(chan, sig)
+        let message = core::mem::transmute_copy::<_, A::Message<'a>>(&message);
+
+        // Signal lives just as long as message.
+        let signal = core::mem::transmute::<_, &'a SignalFuture<A::Response<'a>>>(signal);
+
+        let message = ActorMessage::Request(message, signal);
+        let chan = self.channel.send(message);
+        RequestFuture::new(chan, signal)
     }
 
     /// Perform a notification on this actor. The returned future _must_ be awaited before dropped. If it is not
@@ -256,17 +240,16 @@ impl<'a, A: Actor> ActorContext<'a, A> {
     where
         'a: 'm,
     {
-        let message = NotifyMessage::new(message);
+        let message = ActorMessage::Notify(message);
 
-        let chan = self.notify_channel.send(message);
+        let chan = self.channel.send(message);
         NotifyFuture::new(chan)
     }
 
     /// Mount the underloying actor and initialize the channel.
     pub fn mount(&'a self, config: A::Configuration) -> Address<'a, A> {
         unsafe { &mut *self.actor.get() }.on_mount(config);
-        self.request_channel.initialize();
-        self.notify_channel.initialize();
+        self.channel.initialize();
         Address::new(self)
     }
 }
@@ -278,13 +261,13 @@ enum RequestState {
 }
 
 pub struct NotifyFuture<'a, 'm, A: Actor + 'a> {
-    channel: ChannelSend<'m, 'a, NotifyMessage<'a, A>, A::MaxNotifyQueueSize<'a>>,
+    channel: ChannelSend<'m, 'a, ActorMessage<'a, A>, A::MaxMessageQueueSize<'a>>,
     bomb: Option<DropBomb>,
 }
 
 impl<'a, 'm, A: Actor> NotifyFuture<'a, 'm, A> {
     pub fn new(
-        channel: ChannelSend<'m, 'a, NotifyMessage<'a, A>, A::MaxNotifyQueueSize<'a>>,
+        channel: ChannelSend<'m, 'a, ActorMessage<'a, A>, A::MaxMessageQueueSize<'a>>,
     ) -> Self {
         Self {
             channel,
@@ -306,16 +289,16 @@ impl<'a, 'm, A: Actor> Future for NotifyFuture<'a, 'm, A> {
 }
 
 pub struct RequestFuture<'a, 'm, A: Actor + 'a> {
-    channel: ChannelSend<'m, 'a, RequestMessage<'a, A>, A::MaxRequestQueueSize<'a>>,
-    signal: SignalFuture<'a, 'm, A::Response<'a>>,
+    channel: ChannelSend<'m, 'a, ActorMessage<'a, A>, A::MaxMessageQueueSize<'a>>,
+    signal: &'a SignalFuture<A::Response<'a>>,
     state: RequestState,
     bomb: Option<DropBomb>,
 }
 
 impl<'a, 'm, A: Actor> RequestFuture<'a, 'm, A> {
     pub fn new(
-        channel: ChannelSend<'m, 'a, RequestMessage<'a, A>, A::MaxRequestQueueSize<'a>>,
-        signal: SignalFuture<'a, 'm, A::Response<'a>>,
+        channel: ChannelSend<'m, 'a, ActorMessage<'a, A>, A::MaxMessageQueueSize<'a>>,
+        signal: &'a SignalFuture<A::Response<'a>>,
     ) -> Self {
         Self {
             channel,
@@ -341,7 +324,7 @@ impl<'a, 'm, A: Actor> Future for RequestFuture<'a, 'm, A> {
                     }
                 }
                 RequestState::WaitSignal => {
-                    let result = Pin::new(&mut self.signal).poll(cx);
+                    let result = self.signal.poll_wait(cx);
                     if result.is_ready() {
                         self.bomb.take().unwrap().defuse();
                         return result;
@@ -354,23 +337,7 @@ impl<'a, 'm, A: Actor> Future for RequestFuture<'a, 'm, A> {
     }
 }
 
-pub struct RequestMessage<'m, A: Actor + 'm> {
-    pub message: A::Message<'m>,
-    pub signal: *const SignalSlot<A::Response<'m>>,
-}
-
-impl<'m, A: Actor> RequestMessage<'m, A> {
-    fn new(message: A::Message<'m>, signal: *const SignalSlot<A::Response<'m>>) -> Self {
-        Self { message, signal }
-    }
-}
-
-pub struct NotifyMessage<'m, A: Actor + 'm> {
-    pub message: A::Message<'m>,
-}
-
-impl<'m, A: Actor> NotifyMessage<'m, A> {
-    fn new(message: A::Message<'m>) -> Self {
-        Self { message }
-    }
+pub enum ActorMessage<'m, A: Actor + 'm> {
+    Notify(A::Message<'m>),
+    Request(A::Message<'m>, &'m SignalFuture<A::Response<'m>>),
 }

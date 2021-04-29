@@ -21,8 +21,7 @@ mod tests {
 
         pub struct Add(u32);
         impl Actor for MyActor {
-            type MaxRequestQueueSize<'a> = consts::U1;
-            type MaxNotifyQueueSize<'a> = consts::U0;
+            type MaxMessageQueueSize<'a> = consts::U8;
             type Configuration = ();
             type Message<'a> = Add;
             type OnStartFuture<'a> = ImmediateFuture;
@@ -60,7 +59,12 @@ mod tests {
                 device.a.mount(())
             });
 
-            a_addr.request(Add(10)).await;
+            let a = a_addr.request(Add(10));
+            let b = a_addr.request(Add(10));
+            print!("Awaiting a");
+            a.await;
+            print!("Awaiting b");
+            b.await;
         }
 
         std::thread::spawn(move || {
@@ -93,12 +97,12 @@ mod tests {
         }
     }
 
-#[allow(unused_variables)]
-pub fn print_value_size<T>(name: &'static str, val: &T) {
-    println!(
-        "[{}] value size: {}",
-        name,
-        core::mem::size_of_val::<T>(val)
-    );
-}
+    #[allow(unused_variables)]
+    pub fn print_value_size<T>(name: &'static str, val: &T) {
+        println!(
+            "[{}] value size: {}",
+            name,
+            core::mem::size_of_val::<T>(val)
+        );
+    }
 }

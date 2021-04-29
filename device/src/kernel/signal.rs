@@ -1,27 +1,32 @@
 use atomic_polyfill::{AtomicBool, Ordering};
 use core::future::Future;
-use core::marker::PhantomData;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 use embassy::util::Signal;
 
-pub struct SignalFuture<'s, 'm, T: Send> {
-    signal: &'s SignalSlot<T>,
-    _marker: PhantomData<&'m ()>,
+pub struct SignalFuture<T: Send> {
+    signal: Signal<T>,
 }
 
-impl<'s, T: Send> SignalFuture<'s, '_, T> {
-    pub fn new(signal: &'s SignalSlot<T>) -> Self {
+impl<T: Send> SignalFuture<T> {
+    pub fn new() -> Self {
         Self {
-            signal,
-            _marker: PhantomData,
+            signal: Signal::new(),
         }
+    }
+
+    pub fn signal(&self, value: T) {
+        self.signal.signal(value)
+    }
+
+    pub fn poll_wait(&self, cx: &mut Context<'_>) -> Poll<T> {
+        self.signal.poll_wait(cx)
     }
 }
 
-// impl Unpin for SignalFuture<'_, '_> {}
+impl<T: Send> Unpin for SignalFuture<T> {}
 
-impl<T: Send> Future for SignalFuture<'_, '_, T> {
+impl<T: Send> Future for SignalFuture<T> {
     type Output = T;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -29,9 +34,12 @@ impl<T: Send> Future for SignalFuture<'_, '_, T> {
     }
 }
 
-impl<T: Send> Drop for SignalFuture<'_, '_, T> {
+impl<T: Send> Drop for SignalFuture<T> {
     fn drop(&mut self) {
-        self.signal.release();
+        /*
+        if !self.signal.signaled() {
+            panic!("Signal dropped before done!");
+        }*/
     }
 }
 
