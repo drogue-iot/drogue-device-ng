@@ -21,7 +21,7 @@ use drogue_device::{
         hal::{
             delay::Delay,
             gpio::{
-                gpioa::{PA15, PA6, PA7, PA5},
+                gpioa::{PA15, PA5, PA6, PA7},
                 gpiob::{PB2, PB3, PB4, PB5, PB6, PB7},
                 gpioc::PC0,
                 Analog, Input, Output, PullUp, PushPull,
@@ -83,8 +83,15 @@ type Led4Pin = PB7<Output<PushPull>>;
 
 #[derive(Device)]
 pub struct MyDevice {
-    button: ActorContext<'static, Button<'static, ExtiPin<PB2<Input<PullUp>>>, App<Sx127x<'static>, Led1Pin, Led2Pin, Led3Pin,Led4Pin>>>,
-    app: ActorContext<'static, App<Sx127x<'static>, Led1Pin, Led2Pin, Led3Pin,Led4Pin>>,
+    button: ActorContext<
+        'static,
+        Button<
+            'static,
+            ExtiPin<PB2<Input<PullUp>>>,
+            App<Sx127x<'static>, Led1Pin, Led2Pin, Led3Pin, Led4Pin>,
+        >,
+    >,
+    app: ActorContext<'static, App<Sx127x<'static>, Led1Pin, Led2Pin, Led3Pin, Led4Pin>>,
     led1: ActorContext<'static, Led<Led1Pin>>,
     led2: ActorContext<'static, Led<Led2Pin>>,
     led3: ActorContext<'static, Led<Led3Pin>>,
@@ -162,6 +169,7 @@ async fn main(context: DeviceContext<MyDevice>) {
         .app_key(&APP_KEY.trim_end().into());
 
     log::info!("Configuring with config {:?}", config);
+    log_stack("Before configure");
 
     context.configure(MyDevice {
         app: ActorContext::new(App::new(lora, config)),
@@ -171,13 +179,28 @@ async fn main(context: DeviceContext<MyDevice>) {
         led3: ActorContext::new(Led::new(led3)),
         led4: ActorContext::new(Led::new(led4)),
     });
+    log_stack("After configure, before mount");
 
     context.mount(|device| {
+        log_stack("After configure, inside mount");
         let led1 = device.led1.mount(());
         let led2 = device.led2.mount(());
         let led3 = device.led3.mount(());
         let led4 = device.led4.mount(());
-        let app = device.app.mount(AppConfig { led1, led2, led3, led4 });
-                device.button.mount(app);
+        let app = device.app.mount(AppConfig {
+            led1,
+            led2,
+            led3,
+            led4,
+        });
+        device.button.mount(app);
     });
+
+    log_stack("After mount");
+}
+
+pub fn log_stack(whr: &'static str) {
+    let _u: u32 = 1;
+    let _uptr: *const u32 = &_u;
+    log::info!("[{}] SP: 0x{:p}", whr, &_uptr);
 }

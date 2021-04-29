@@ -123,3 +123,9 @@ pub use embassy_std::*;
 
 #[cfg(feature = "std")]
 pub mod testutil;
+
+pub fn log_stack(whr: &'static str) {
+    let _u: u32 = 1;
+    let _uptr: *const u32 = &_u;
+    log::info!("[{}] SP: 0x{:p}", whr, &_uptr);
+}

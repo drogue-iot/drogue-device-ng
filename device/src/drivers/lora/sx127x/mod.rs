@@ -1,7 +1,8 @@
-use core::future::Future;
-use crate::traits::lora::*;
+use crate::fmt::*;
 use crate::time::*;
 use crate::traits::gpio::WaitForRisingEdge;
+use crate::traits::lora::*;
+use core::future::Future;
 use embedded_hal::{
     blocking::{
         delay::DelayMs,
@@ -9,7 +10,6 @@ use embedded_hal::{
     },
     digital::v2::OutputPin,
 };
-use crate::fmt::*;
 
 use lorawan_device::{
     radio, region, Device as LorawanDevice, Error as LorawanError, Event as LorawanEvent,
@@ -73,6 +73,7 @@ where
         delay: &mut dyn DelayMs<u8>,
         get_random: fn() -> u32,
     ) -> Result<Self, LoraError> {
+        crate::log_stack("Sx127xDriver::new");
         let radio = Radio::new(spi, cs, reset, delay)?;
         Ok(Self {
             irq,
@@ -83,6 +84,7 @@ where
     }
 
     fn process_event(&mut self, event: LorawanEvent<'a, Radio<SPI, CS, RESET, E>>) -> DriverEvent {
+        crate::log_stack("Sx127xDriver::process_event");
         match self.state.take().unwrap() {
             DriverState::Configured(lorawan) => {
                 match &event {
@@ -122,6 +124,7 @@ where
         lorawan: &mut LorawanDevice<Radio<SPI, CS, RESET, E>, Crypto>,
         response: Result<LorawanResponse, LorawanError<Radio<SPI, CS, RESET, E>>>,
     ) -> DriverEvent {
+        crate::log_stack("Sx127xDriver::process_response");
         match response {
             Ok(response) => match response {
                 LorawanResponse::TimeoutRequest(ms) => {

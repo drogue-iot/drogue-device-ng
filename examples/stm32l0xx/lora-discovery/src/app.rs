@@ -1,7 +1,7 @@
 use core::future::Future;
 use core::pin::Pin;
-use drogue_device::{actors::button::*, traits::lora::*, *};
 use drogue_device::actors::led::{Led, LedMessage};
+use drogue_device::{actors::button::*, traits::lora::*, *};
 use embassy_stm32::system::OutputPin;
 
 pub enum Command {
@@ -78,7 +78,8 @@ where
     P2: OutputPin + 'static,
     P3: OutputPin + 'static,
     P4: OutputPin + 'static,
-{}
+{
+}
 
 impl<D, P1, P2, P3, P4> Actor for App<D, P1, P2, P3, P4>
 where
@@ -103,7 +104,7 @@ where
 
     fn on_start<'m>(mut self: Pin<&'m mut Self>) -> Self::OnStartFuture<'m> {
         async move {
-
+            crate::log_stack("App::on_start");
             if let Some(cfg) = &self.cfg {
                 cfg.led4.notify(LedMessage::On).await;
             }
@@ -135,6 +136,7 @@ where
         message: &'m mut Self::Message<'m>,
     ) -> Self::OnMessageFuture<'m> {
         async move {
+            crate::log_stack("App::on_message");
             match *message {
                 Command::Send => {
                     log::info!("Sending message...");
