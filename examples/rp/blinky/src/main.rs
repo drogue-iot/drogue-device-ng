@@ -16,7 +16,6 @@ use drogue_device::{
         peripherals::PIN_25,
         Peripherals,
     },
-    time::{Duration, Timer},
     *,
 };
 
@@ -31,19 +30,14 @@ pub struct MyDevice {
 async fn main(context: DeviceContext<MyDevice>) {
     let p = Peripherals::take().unwrap();
 
-    let led = Output::new(p.PIN_25, Level::Low);
-
     context.configure(MyDevice {
-        led: ActorContext::new(Led::new(led)),
+        led: ActorContext::new(Led::new(Output::new(p.PIN_25, Level::Low))),
     });
 
-    let led = context.mount(|device| {
-        let led = device.led.mount(());
-        led
-    });
+    let led = context.mount(|device| device.led.mount(()));
 
     loop {
-        led.notify(LedMessage::Toggle).unwrap();
-        Timer::after(Duration::from_secs(1)).await;
+        cortex_m::asm::delay(1_000_000);
+        led.request(LedMessage::Toggle).unwrap().await;
     }
 }
