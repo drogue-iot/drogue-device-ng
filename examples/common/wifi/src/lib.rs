@@ -1,3 +1,12 @@
+#![no_std]
+#![macro_use]
+#![allow(incomplete_features)]
+#![feature(generic_associated_types)]
+#![feature(min_type_alias_impl_trait)]
+#![feature(impl_trait_in_bindings)]
+#![feature(type_alias_impl_trait)]
+#![feature(concat_idents)]
+
 use core::future::Future;
 use core::pin::Pin;
 use core::str::FromStr;
