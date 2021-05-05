@@ -85,18 +85,41 @@ driver can write blocks of async code to implement the trait.
 ==  Writing an Actor
 
 An actor must implement the `Actor` trait, which will allow it to be mounted into the drogue device
-runtime. An actor using the above driver could look like the following
+runtime. An actor providing an atomic counter using the above driver is shown below:
 
 [source, rust]
 ----
 #![feature(type_alias_impl_trait)]
 #![feature(generic_associated_types)]
-pub struct CounterActor {
+pub struct AtomicCounter {
     counter: MyCounter
 }
 
-impl Actor for CounterActor {
-    type Message<'m>
+pub enum CounterMessage {
+    Increment,
+    Add(u32),
+}
+
+impl Actor for AtomicCounter {
+    type Message<'m> = CounterMessage;
+    type Response<'m> = u32;
+
+    type OnStartFuture<'m> = impl Future<Output = ()> + 'm;
+    fn on_start(mut self: Pin<&mut Self>) -> Self::OnStartFuture<'_> {
+       async move {
+       }
+    }
+
+    type OnMessageFuture<'m> = impl Future<Output = u32> + 'm;
+    fn on_message<'m>(self: Pin<&'m mut Self>, message: Self::Message<'m>) -> Self::OnMessageFuture<'m> {
+        async move {
+            match message {
+                CounterMessage::Increment => self.counter.increment().await,
+                CounterMessage::Add(value) => self.counter.add(value).await,
+            }
+        }
+    }
 }
 ----
-// TODO!
+
+Although a very complex way to implement an atomic counter, it gives you an idea of how actors provide exclusive access to a resource.
