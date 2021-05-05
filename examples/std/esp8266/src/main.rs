@@ -65,8 +65,8 @@ async fn main(context: DeviceContext<MyDevice>) {
     });
 
     loop {
-        app.notify(Command::Send).unwrap();
-        time::Timer::after(time::Duration::from_secs(60)).await;
+        app.request(Command::Send).unwrap().await;
+        time::Timer::after(time::Duration::from_secs(10)).await;
     }
 }
 
